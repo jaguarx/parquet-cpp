@@ -3,12 +3,16 @@
 #include <stdio.h>
 
 #include "example_util.h"
-#include "encodings.h"
+#include "encodings/encodings.h"
 
 using namespace impala;
 using namespace parquet;
 using namespace parquet_cpp;
 using namespace std;
+
+/**
+ * Test bed for encodings and some utilities to measure their throughput.
+ */
 
 class DeltaBitPackEncoder {
  public:
@@ -22,7 +26,7 @@ class DeltaBitPackEncoder {
 
   uint8_t* Encode(int* encoded_len) {
     uint8_t* result = new uint8_t[1024 * 1024];
-    int num_mini_blocks = BitUtil::Ceil(num_values(), mini_block_size_);
+    int num_mini_blocks = BitUtil::Ceil(num_values() - 1, mini_block_size_);
     uint8_t* mini_block_widths = NULL;
 
     BitWriter writer(result, 1024 * 1024);
@@ -199,7 +203,7 @@ class StopWatch {
 
 uint64_t TestPlainIntEncoding(const uint8_t* data, int num_values, int batch_size) {
   uint64_t result = 0;
-  PlainDecoder decoder(NULL);
+  PlainDecoder decoder(Type::INT32);
   decoder.SetData(num_values, data, num_values * sizeof(int32_t));
   int32_t values[batch_size];
   for (int i = 0; i < num_values;) {
@@ -222,7 +226,7 @@ uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
   } else {
     mini_block_size = 32;
   }
-  DeltaBitPackDecoder decoder(NULL);
+  DeltaBitPackDecoder decoder(Type::INT32);
   DeltaBitPackEncoder encoder(mini_block_size);
   for (int i = 0; i < values.size(); ++i) {
     encoder.AddInt32(values[i]);
@@ -316,7 +320,7 @@ void TestBinaryPacking() {
 }
 
 void TestDeltaLengthByteArray() {
-  DeltaLengthByteArrayDecoder decoder(NULL);
+  DeltaLengthByteArrayDecoder decoder;
   DeltaLengthByteArrayEncoder encoder;
 
   vector<string> values;
@@ -345,7 +349,7 @@ void TestDeltaLengthByteArray() {
 }
 
 void TestDeltaByteArray() {
-  DeltaByteArrayDecoder decoder(NULL);
+  DeltaByteArrayDecoder decoder;
   DeltaByteArrayEncoder encoder;
 
   vector<string> values;

@@ -1,5 +1,6 @@
 #include "parquet/parquet.h"
-#include "encodings.h"
+#include "encodings/encodings.h"
+#include "compression/codec.h"
 
 #include <string>
 #include <string.h>
@@ -27,6 +28,9 @@ const uint8_t* InMemoryInputStream::Read(int num_to_read, int* num_bytes) {
   const uint8_t* result = Peek(num_to_read, num_bytes);
   offset_ += *num_bytes;
   return result;
+}
+
+ColumnReader::~ColumnReader() {
 }
 
 ColumnReader::ColumnReader(const ColumnMetaData* metadata,
@@ -59,10 +63,19 @@ ColumnReader::ColumnReader(const ColumnMetaData* metadata,
       value_byte_size = sizeof(ByteArray);
       break;
     default:
-      ParquetException::NYI();
+      ParquetException::NYI("Unsupported type");
   }
 
-  if (metadata->codec != CompressionCodec::UNCOMPRESSED) ParquetException::NYI();
+  switch (metadata->codec) {
+    case CompressionCodec::UNCOMPRESSED:
+      break;
+    case CompressionCodec::SNAPPY:
+      decompressor_.reset(new SnappyDecompressor());
+      break;
+    default:
+      ParquetException::NYI("Reading compressed data");
+  }
+
   config_ = Config::DefaultConfig();
   values_buffer_.resize(config_.batch_size * value_byte_size);
 }
@@ -97,7 +110,7 @@ void ColumnReader::BatchDecode() {
           current_decoder_->GetByteArray(reinterpret_cast<ByteArray*>(buf), batch_size);
       break;
     default:
-      ParquetException::NYI();
+      ParquetException::NYI("Unsupported type.");
   }
 }
 
@@ -118,10 +131,23 @@ bool ColumnReader::ReadNewPage() {
     DeserializeThriftMsg(buffer, &header_size, &current_page_header_);
     stream_->Read(header_size, &bytes_read);
 
-    // TODO: handle decompression.
+    int compressed_len = current_page_header_.compressed_page_size;
     int uncompressed_len = current_page_header_.uncompressed_page_size;
-    buffer = stream_->Read(uncompressed_len, &bytes_read);
-    if (bytes_read != uncompressed_len) ParquetException::EofException();
+
+    // Read the compressed data page.
+    buffer = stream_->Read(compressed_len, &bytes_read);
+    if (bytes_read != compressed_len) ParquetException::EofException();
+
+    // Uncompress it if we need to
+    if (decompressor_ != NULL) {
+      // Grow the uncompressed buffer if we need to.
+      if (uncompressed_len > decompression_buffer_.size()) {
+        decompression_buffer_.resize(uncompressed_len);
+      }
+      decompressor_->Decompress(
+          compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
+      buffer = &decompression_buffer_[0];
+    }
 
     if (current_page_header_.type == PageType::DICTIONARY_PAGE) {
       unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
@@ -130,10 +156,10 @@ bool ColumnReader::ReadNewPage() {
         throw ParquetException("Column cannot have more than one dictionary.");
       }
 
-      PlainDecoder dictionary(schema_);
+      PlainDecoder dictionary(schema_->type);
       dictionary.SetData(current_page_header_.dictionary_page_header.num_values,
           buffer, uncompressed_len);
-      shared_ptr<Decoder> decoder(new DictionaryDecoder(schema_, &dictionary));
+      shared_ptr<Decoder> decoder(new DictionaryDecoder(schema_->type, &dictionary));
       decoders_[Encoding::RLE_DICTIONARY] = decoder;
       current_decoder_ = decoders_[Encoding::RLE_DICTIONARY].get();
       continue;
@@ -168,9 +194,9 @@ bool ColumnReader::ReadNewPage() {
           case Encoding::PLAIN: {
             shared_ptr<Decoder> decoder;
             if (schema_->type == Type::BOOLEAN) {
-              decoder.reset(new BoolDecoder(schema_));
+              decoder.reset(new BoolDecoder());
             } else {
-              decoder.reset(new PlainDecoder(schema_));
+              decoder.reset(new PlainDecoder(schema_->type));
             }
             decoders_[encoding] = decoder;
             current_decoder_ = decoder.get();
@@ -182,7 +208,7 @@ bool ColumnReader::ReadNewPage() {
           case Encoding::DELTA_BINARY_PACKED:
           case Encoding::DELTA_LENGTH_BYTE_ARRAY:
           case Encoding::DELTA_BYTE_ARRAY:
-            ParquetException::NYI();
+            ParquetException::NYI("Unsupported encoding");
 
           default:
             throw ParquetException("Unknown encoding type.");

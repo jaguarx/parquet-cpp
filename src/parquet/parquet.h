@@ -2,6 +2,7 @@
 #define PARQUET_PARQUET_H_
 
 #include <exception>
+#include <sstream>
 #include <boost/cstdint.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/unordered_map.hpp>
@@ -22,6 +23,7 @@
 
 namespace parquet_cpp {
 
+class Decompressor;
 class Decoder;
 
 struct ByteArray {
@@ -32,7 +34,11 @@ struct ByteArray {
 class ParquetException : public std::exception {
  public:
   static void EofException() { throw ParquetException("Unexpected end of stream."); }
-  static void NYI() { throw ParquetException("Not yet implemented."); }
+  static void NYI(const std::string& msg) {
+    std::stringstream ss;
+    ss << "Not yet implemented: " << msg << ".";
+    throw ParquetException(ss.str());
+  }
 
   explicit ParquetException(const char* msg) : msg_(msg) {}
   explicit ParquetException(const std::string& msg) : msg_(msg) {}
@@ -97,10 +103,13 @@ class ColumnReader {
   ColumnReader(const parquet::ColumnMetaData*,
       const parquet::SchemaElement*, InputStream* stream);
 
+  ~ColumnReader();
+
   // Returns true if there are still values in this column.
   bool HasNext();
 
   // Returns the next value of this type.
+  // TODO: batchify this interface.
   bool GetBool(int* definition_level, int* repetition_level);
   int32_t GetInt32(int* definition_level, int* repetition_level);
   int64_t GetInt64(int* definition_level, int* repetition_level);
@@ -121,7 +130,11 @@ class ColumnReader {
   const parquet::SchemaElement* schema_;
   InputStream* stream_;
 
-  // Map of encoding type to decoder object.
+  // Compression codec to use.
+  boost::scoped_ptr<Decompressor> decompressor_;
+  std::vector<uint8_t> decompression_buffer_;
+
+  // Map of compression type to decompressor object.
   boost::unordered_map<parquet::Encoding::type, boost::shared_ptr<Decoder> > decoders_;
 
   parquet::PageHeader current_page_header_;

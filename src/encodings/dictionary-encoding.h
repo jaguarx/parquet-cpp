@@ -7,10 +7,13 @@ namespace parquet_cpp {
 
 class DictionaryDecoder : public Decoder {
  public:
-  DictionaryDecoder(const parquet::SchemaElement* schema, Decoder* dictionary)
-    : Decoder(schema, parquet::Encoding::RLE_DICTIONARY) {
+  // Initializes the dictionary with values from 'dictionary'. The data in dictionary
+  // is not guaranteed to persist in memory after this call so the dictionary decoder
+  // needs to copy the data out if necessary.
+  DictionaryDecoder(const parquet::Type::type& type, Decoder* dictionary)
+    : Decoder(type, parquet::Encoding::RLE_DICTIONARY) {
     int num_dictionary_values = dictionary->values_left();
-    switch (schema->type) {
+    switch (type) {
       case parquet::Type::BOOLEAN:
         throw ParquetException("Boolean cols should not be dictionary encoded.");
 
@@ -30,12 +33,25 @@ class DictionaryDecoder : public Decoder {
         double_dictionary_.resize(num_dictionary_values);
         dictionary->GetDouble(&double_dictionary_[0], num_dictionary_values);
         break;
-      case parquet::Type::BYTE_ARRAY:
+      case parquet::Type::BYTE_ARRAY: {
         byte_array_dictionary_.resize(num_dictionary_values);
         dictionary->GetByteArray(&byte_array_dictionary_[0], num_dictionary_values);
+        int total_size = 0;
+        for (int i = 0; i < num_dictionary_values; ++i) {
+          total_size += byte_array_dictionary_[i].len;
+        }
+        byte_array_data_.resize(total_size);
+        int offset = 0;
+        for (int i = 0; i < num_dictionary_values; ++i) {
+          memcpy(&byte_array_data_[offset],
+              byte_array_dictionary_[i].ptr, byte_array_dictionary_[i].len);
+          byte_array_dictionary_[i].ptr = &byte_array_data_[offset];
+          offset += byte_array_dictionary_[i].len;
+        }
         break;
+      }
       default:
-        ParquetException::NYI();
+        ParquetException::NYI("Unsupported dictionary type");
     }
   }
 
@@ -102,6 +118,10 @@ class DictionaryDecoder : public Decoder {
   std::vector<float> float_dictionary_;
   std::vector<double> double_dictionary_;
   std::vector<ByteArray> byte_array_dictionary_;
+
+  // Data that contains the byte array data (byte_array_dictionary_ just has the
+  // pointers).
+  std::vector<uint8_t> byte_array_data_;
 
   impala::RleDecoder idx_decoder_;
 };
