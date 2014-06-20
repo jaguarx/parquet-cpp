@@ -1,3 +1,17 @@
+// Copyright 2012 Cloudera Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef PARQUET_DELTA_BYTE_ARRAY_ENCODING_H
 #define PARQUET_DELTA_BYTE_ARRAY_ENCODING_H
 
@@ -30,7 +44,7 @@ class DeltaByteArrayDecoder : public Decoder {
   virtual int GetByteArray(ByteArray* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     for (int  i = 0; i < max_values; ++i) {
-      int prefix_len;
+      int prefix_len = 0;
       prefix_len_decoder_.GetInt32(&prefix_len, 1);
       ByteArray suffix;
       suffix_decoder_.GetByteArray(&suffix, 1);

@@ -1,9 +1,25 @@
+// Copyright 2012 Cloudera Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <parquet/parquet.h>
 #include <iostream>
 #include <stdio.h>
 
 #include "example_util.h"
+#include "compression/codec.h"
 #include "encodings/encodings.h"
+#include "util/stopwatch.h"
 
 using namespace impala;
 using namespace parquet;
@@ -12,6 +28,7 @@ using namespace std;
 
 /**
  * Test bed for encodings and some utilities to measure their throughput.
+ * TODO: this file needs some major cleanup.
  */
 
 class DeltaBitPackEncoder {
@@ -20,16 +37,16 @@ class DeltaBitPackEncoder {
     mini_block_size_ = mini_block_size;
   }
 
-  void AddInt32(int32_t v) {
+  void Add(int64_t v) {
     values_.push_back(v);
   }
 
   uint8_t* Encode(int* encoded_len) {
-    uint8_t* result = new uint8_t[1024 * 1024];
+    uint8_t* result = new uint8_t[10 * 1024 * 1024];
     int num_mini_blocks = BitUtil::Ceil(num_values() - 1, mini_block_size_);
     uint8_t* mini_block_widths = NULL;
 
-    BitWriter writer(result, 1024 * 1024);
+    BitWriter writer(result, 10 * 1024 * 1024);
 
     // Writer the size of each block. We only use 1 block currently.
     writer.PutVlqInt(num_mini_blocks * mini_block_size_);
@@ -44,7 +61,7 @@ class DeltaBitPackEncoder {
     writer.PutZigZagVlqInt(values_[0]);
 
     // Compute the values as deltas and the min delta.
-    int min_delta = INT_MAX;
+    int64_t min_delta = numeric_limits<int64_t>::max();
     for (int i = values_.size() - 1; i > 0; --i) {
       values_[i] -= values_[i - 1];
       min_delta = min(min_delta, values_[i]);
@@ -61,7 +78,7 @@ class DeltaBitPackEncoder {
       int n = min(mini_block_size_, num_values() - idx);
 
       // Compute the max delta in this mini block.
-      int max_delta = INT_MIN;
+      int64_t max_delta = numeric_limits<int64_t>::min();
       for (int j = 0; j < n; ++j) {
         max_delta = max(values_[idx + j], max_delta);
       }
@@ -92,14 +109,14 @@ class DeltaBitPackEncoder {
 
  private:
   int mini_block_size_;
-  vector<int32_t> values_;
+  vector<int64_t> values_;
 };
 
 class DeltaLengthByteArrayEncoder {
  public:
   DeltaLengthByteArrayEncoder(int mini_block_size = 8) :
     len_encoder_(mini_block_size),
-    buffer_(new uint8_t[1024 * 1024]),
+    buffer_(new uint8_t[10 * 1024 * 1024]),
     offset_(0),
     plain_encoded_len_(0) {
   }
@@ -110,7 +127,7 @@ class DeltaLengthByteArrayEncoder {
 
   void Add(const uint8_t* ptr, int len) {
     plain_encoded_len_ += len + sizeof(int);
-    len_encoder_.AddInt32(len);
+    len_encoder_.Add(len);
     memcpy(buffer_ + offset_, ptr, len);
     offset_ += len;
   }
@@ -149,7 +166,7 @@ class DeltaByteArrayEncoder {
         break;
       }
     }
-    prefix_len_encoder_.AddInt32(prefix_len);
+    prefix_len_encoder_.Add(prefix_len);
     suffix_encoder_.Add(reinterpret_cast<const uint8_t*>(s.data()) + prefix_len,
         s.size() - prefix_len);
     last_value_ = s;
@@ -161,7 +178,7 @@ class DeltaByteArrayEncoder {
     int suffix_buffer_len;
     uint8_t* suffix_buffer = suffix_encoder_.Encode(&suffix_buffer_len);
 
-    uint8_t* buffer = new uint8_t[1024 * 1024];
+    uint8_t* buffer = new uint8_t[10 * 1024 * 1024];
     memcpy(buffer, &prefix_buffer_len, sizeof(int));
     memcpy(buffer + sizeof(int), prefix_buffer, prefix_buffer_len);
     memcpy(buffer + sizeof(int) + prefix_buffer_len, suffix_buffer, suffix_buffer_len);
@@ -180,34 +197,13 @@ class DeltaByteArrayEncoder {
 };
 
 
-class StopWatch {
- public:
-  StopWatch() {
-  }
-
-  void Start() {
-    clock_gettime(CLOCK_MONOTONIC, &start_);
-  }
-
-  // Returns time in nanoseconds.
-  uint64_t Stop() {
-    timespec end;
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    return (end.tv_sec - start_.tv_sec) * 1000L * 1000L * 1000L +
-           (end.tv_nsec - start_.tv_nsec);
-  }
-
- private:
-  timespec start_;
-};
-
 uint64_t TestPlainIntEncoding(const uint8_t* data, int num_values, int batch_size) {
   uint64_t result = 0;
-  PlainDecoder decoder(Type::INT32);
-  decoder.SetData(num_values, data, num_values * sizeof(int32_t));
-  int32_t values[batch_size];
+  PlainDecoder decoder(Type::INT64);
+  decoder.SetData(num_values, data, num_values * sizeof(int64_t));
+  int64_t values[batch_size];
   for (int i = 0; i < num_values;) {
-    int n = decoder.GetInt32(values, batch_size);
+    int n = decoder.GetInt64(values, batch_size);
     for (int j = 0; j < n; ++j) {
       result += values[j];
     }
@@ -216,7 +212,7 @@ uint64_t TestPlainIntEncoding(const uint8_t* data, int num_values, int batch_siz
   return result;
 }
 
-uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
+uint64_t TestBinaryPackedEncoding(const char* name, const vector<int64_t>& values,
     int benchmark_iters = -1, int benchmark_batch_size = 1) {
   int mini_block_size;
   if (values.size() < 8) {
@@ -226,10 +222,10 @@ uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
   } else {
     mini_block_size = 32;
   }
-  DeltaBitPackDecoder decoder(Type::INT32);
+  DeltaBitPackDecoder decoder(Type::INT64);
   DeltaBitPackEncoder encoder(mini_block_size);
   for (int i = 0; i < values.size(); ++i) {
-    encoder.AddInt32(values[i]);
+    encoder.Add(values[i]);
   }
 
   int raw_len = encoder.num_values() * sizeof(int);
@@ -242,8 +238,8 @@ uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
     printf("  Encoded len: %d (%0.2f%%)\n", len, len * 100 / (float)raw_len);
     decoder.SetData(encoder.num_values(), buffer, len);
     for (int i = 0; i < encoder.num_values(); ++i) {
-      int32_t x = 0;
-      decoder.GetInt32(&x, 1);
+      int64_t x = 0;
+      decoder.GetInt64(&x, 1);
       if (values[i] != x) {
         cerr << "Bad: " << i << endl;
         cerr << "  " << x << " != " << values[i] << endl;
@@ -252,14 +248,18 @@ uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
     }
     return 0;
   } else {
+    printf("%s\n", name);
+    printf("  Raw len: %d\n", raw_len);
+    printf("  Encoded len: %d (%0.2f%%)\n", len, len * 100 / (float)raw_len);
+
     uint64_t result = 0;
-    int32_t buf[benchmark_batch_size];
+    int64_t buf[benchmark_batch_size];
     StopWatch sw;
     sw.Start();\
     for (int k = 0; k < benchmark_iters; ++k) {
       decoder.SetData(encoder.num_values(), buffer, len);
       for (int i = 0; i < values.size();) {
-        int n = decoder.GetInt32(buf, benchmark_batch_size);
+        int n = decoder.GetInt64(buf, benchmark_batch_size);
         for (int j = 0; j < n; ++j) {
           result += buf[j];
         }
@@ -283,8 +283,38 @@ uint64_t TestBinaryPackedEncoding(const char* name, const vector<int>& values,
   printf("%s rate (batch size = %2d): %0.3fM per second.\n",\
       NAME, BATCH_SIZE, mult / elapsed);
 
+void TestPlainIntCompressed(Codec* codec, const vector<int64_t>& data, int num_iters, int batch_size) {
+  const uint8_t* raw_data = reinterpret_cast<const uint8_t*>(&data[0]);
+  int uncompressed_len = data.size() * sizeof(int64_t);
+  uint8_t* decompressed_data = new uint8_t[uncompressed_len];
+
+  int max_compressed_size = codec->MaxCompressedLen(uncompressed_len, raw_data);
+  uint8_t* compressed_data = new uint8_t[max_compressed_size];
+  int compressed_len = codec->Compress(uncompressed_len, raw_data,
+      max_compressed_size, compressed_data);
+
+  printf("\n%s:\n  Uncompressed len: %d\n  Compressed len:   %d\n",
+      codec->name(), uncompressed_len, compressed_len);
+
+  double mult = num_iters * data.size() * 1000.;
+  StopWatch sw;
+  sw.Start();
+  uint64_t r = 0;
+  for (int i = 0; i < num_iters; ++i) {
+    codec->Decompress(compressed_len, compressed_data,
+        uncompressed_len, decompressed_data);
+    r += TestPlainIntEncoding(decompressed_data, data.size(), batch_size);
+  }
+  int64_t elapsed = sw.Stop();\
+  printf("Compressed(%s) plain int rate (batch size = %2d): %0.3fM per second.\n",
+      codec->name(), batch_size, mult / elapsed);
+
+  delete[] compressed_data;
+  delete[] decompressed_data;
+}
+
 void TestBinaryPacking() {
-  vector<int> values;
+  vector<int64_t> values;
   values.clear();
   for (int i = 0; i < 100; ++i) values.push_back(0);
   TestBinaryPackedEncoding("Zeros", values);
@@ -398,7 +428,7 @@ int main(int argc, char** argv) {
   const int NUM_ITERS = 10;
   const double mult = NUM_VALUES * NUM_ITERS * 1000.;
 
-  vector<int32_t> plain_int_data;
+  vector<int64_t> plain_int_data;
   plain_int_data.resize(NUM_VALUES);
 
   TEST("Plain decoder", TestPlainIntEncoding, plain_int_data, 1);
@@ -407,14 +437,27 @@ int main(int argc, char** argv) {
   TEST("Plain decoder", TestPlainIntEncoding, plain_int_data, 64);
 
   // Test rand ints between 0 and 10K
-  vector<int> values;
-  for (int i = 0; i < 500000; ++i) {
+  vector<int64_t> values;
+  for (int i = 0; i < 1000000; ++i) {
     values.push_back(rand() % 10000);
   }
-  TestBinaryPackedEncoding("Rand 0-10K", values, 20, 1);
-  TestBinaryPackedEncoding("Rand 0-10K", values, 20, 16);
-  TestBinaryPackedEncoding("Rand 0-10K", values, 20, 32);
-  TestBinaryPackedEncoding("Rand 0-10K", values, 20, 64);
+  TestBinaryPackedEncoding("Rand 0-10K", values, 100, 1);
+  TestBinaryPackedEncoding("Rand 0-10K", values, 100, 16);
+  TestBinaryPackedEncoding("Rand 0-10K", values, 100, 32);
+  TestBinaryPackedEncoding("Rand 0-10K", values, 100, 64);
+
+  SnappyCodec snappy_codec;
+  Lz4Codec lz4_codec;
+
+  TestPlainIntCompressed(&snappy_codec, values, 100, 1);
+  TestPlainIntCompressed(&snappy_codec, values, 100, 16);
+  TestPlainIntCompressed(&snappy_codec, values, 100, 32);
+  TestPlainIntCompressed(&snappy_codec, values, 100, 64);
+
+  TestPlainIntCompressed(&lz4_codec, values, 100, 1);
+  TestPlainIntCompressed(&lz4_codec, values, 100, 16);
+  TestPlainIntCompressed(&lz4_codec, values, 100, 32);
+  TestPlainIntCompressed(&lz4_codec, values, 100, 64);
 
   return 0;
 }

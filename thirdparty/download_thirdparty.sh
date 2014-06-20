@@ -15,4 +15,3 @@ if [ ! -d snappy-${SNAPPY_VERSION} ]; then
   rm snappy-${SNAPPY_VERSION}.tar.gz
 fi
 
-

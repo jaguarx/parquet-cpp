@@ -1,5 +1,19 @@
-#ifndef PARQUET_PARQUET_H_
-#define PARQUET_PARQUET_H_
+// Copyright 2012 Cloudera Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#ifndef PARQUET_PARQUET_H
+#define PARQUET_PARQUET_H
 
 #include <exception>
 #include <sstream>
@@ -23,7 +37,7 @@
 
 namespace parquet_cpp {
 
-class Decompressor;
+class Codec;
 class Decoder;
 
 struct ByteArray {
@@ -131,7 +145,7 @@ class ColumnReader {
   InputStream* stream_;
 
   // Compression codec to use.
-  boost::scoped_ptr<Decompressor> decompressor_;
+  boost::scoped_ptr<Codec> decompressor_;
   std::vector<uint8_t> decompression_buffer_;
 
   // Map of compression type to decompressor object.
