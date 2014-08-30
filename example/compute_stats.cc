@@ -69,8 +69,9 @@ int main(int argc, char** argv) {
     const RowGroup& row_group = metadata.row_groups[i];
     for (int c = 0; c < row_group.columns.size(); ++c) {
       if (col_idx != -1 && col_idx != c) continue;
-      const ColumnChunk& col = row_group.columns[c];
-      cout << "Reading column " << metadata.schema[c].name << " (idx=" << c << ", type=" 
+      const ColumnChunk& col = row_group.columns[col_idx-1];
+      const SchemaElement& schemaelement = metadata.schema[col_idx];
+      cout << "Reading column " << schemaelement.name << " (idx=" << c << ", type=" 
            << metadata.schema[c].type << ")\n";
       if (col.meta_data.type == Type::INT96) {
         cout << "  Skipping unsupported column" << endl;
@@ -95,7 +96,7 @@ int main(int argc, char** argv) {
       }
 
       InMemoryInputStream input(&column_buffer[0], column_buffer.size());
-      ColumnReader reader(&col.meta_data, &metadata.schema[c], &input);
+      ColumnReader reader(&col.meta_data, &schemaelement, &input);
 
       bool first_val = true;
       AnyType min, max;

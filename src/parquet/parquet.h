@@ -212,7 +212,7 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
 
 inline bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
   *rep_level = 1;
-  if (ReadDefinitionRepetitionLevels != NULL) {
+  if (definition_level_decoder_ != NULL) {
     if (!definition_level_decoder_->Get(def_level)) ParquetException::EofException();
   }
   --num_buffered_values_;
