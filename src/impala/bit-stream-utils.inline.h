@@ -145,7 +145,8 @@ inline bool BitReader::GetVlqInt(uint64_t* v) {
   uint8_t byte = 0;
   do {
     if (!GetAligned<uint8_t>(1, &byte)) return false;
-    *v |= (byte & 0x7F) << shift;
+    uint64_t tmp = i(byte & 0x7f);
+    *v |= tmp << shift;
     shift += 7;
     DCHECK_LE(++num_bytes, MAX_VLQ_BYTE_LEN);
   } while ((byte & 0x80) != 0);
