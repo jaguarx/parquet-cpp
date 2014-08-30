@@ -21,13 +21,16 @@ namespace parquet_cpp {
 
 class BoolDecoder : public Decoder {
  public:
-  BoolDecoder() : Decoder(parquet::Type::BOOLEAN, parquet::Encoding::PLAIN) { }
+  BoolDecoder() : Decoder(parquet::Type::BOOLEAN, parquet::Encoding::PLAIN),len_(0) { }
 
   virtual void SetData(int num_values, const uint8_t* data, int len) {
     num_values_ = num_values;
     decoder_ = impala::RleDecoder(data, len, 1);
+    len_ = len;
   }
-
+  virtual int GetSize(){
+     return len_;
+  }
   virtual int GetBool(bool* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     for (int i = 0; i < max_values; ++i) {
@@ -39,6 +42,7 @@ class BoolDecoder : public Decoder {
 
  private:
   impala::RleDecoder decoder_;
+  int len_;
 };
 
 }

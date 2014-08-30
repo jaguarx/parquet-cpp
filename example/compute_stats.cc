@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
   FileMetaData metadata;
   if (!GetFileMetadata(argv[1], &metadata)) return -1;
 
+  cout << "col_idx: " << col_idx << " : " << metadata.schema[col_idx].name << "\n";
   FILE* file = fopen(argv[1], "r");
   if (file == NULL) {
     cerr << "Could not open file: " << argv[1] << endl;
@@ -69,7 +70,8 @@ int main(int argc, char** argv) {
     for (int c = 0; c < row_group.columns.size(); ++c) {
       if (col_idx != -1 && col_idx != c) continue;
       const ColumnChunk& col = row_group.columns[c];
-      cout << "Reading column " << metadata.schema[c + 1].name << " (idx=" << c << ")\n";
+      cout << "Reading column " << metadata.schema[c].name << " (idx=" << c << ", type=" 
+           << metadata.schema[c].type << ")\n";
       if (col.meta_data.type == Type::INT96) {
         cout << "  Skipping unsupported column" << endl;
         continue;
@@ -81,9 +83,11 @@ int main(int argc, char** argv) {
           col_start = col.meta_data.dictionary_page_offset;
         }
       }
+      cout << " offset:"<< col_start << "\n";
       fseek(file, col_start, SEEK_SET);
       vector<uint8_t> column_buffer;
       column_buffer.resize(col.meta_data.total_compressed_size);
+      cerr << "total_size: " << col.meta_data.total_compressed_size<<"\n";
       size_t num_read = fread(&column_buffer[0], 1, column_buffer.size(), file);
       if (num_read != column_buffer.size()) {
         cerr << "Could not read column data." << endl;
@@ -91,7 +95,7 @@ int main(int argc, char** argv) {
       }
 
       InMemoryInputStream input(&column_buffer[0], column_buffer.size());
-      ColumnReader reader(&col.meta_data, &metadata.schema[c + 1], &input);
+      ColumnReader reader(&col.meta_data, &metadata.schema[c], &input);
 
       bool first_val = true;
       AnyType min, max;

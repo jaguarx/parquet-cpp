@@ -25,7 +25,7 @@ class DictionaryDecoder : public Decoder {
   // is not guaranteed to persist in memory after this call so the dictionary decoder
   // needs to copy the data out if necessary.
   DictionaryDecoder(const parquet::Type::type& type, Decoder* dictionary)
-    : Decoder(type, parquet::Encoding::RLE_DICTIONARY) {
+    : Decoder(type, parquet::Encoding::RLE_DICTIONARY), len_(0) {
     int num_dictionary_values = dictionary->values_left();
     switch (type) {
       case parquet::Type::BOOLEAN:
@@ -67,6 +67,10 @@ class DictionaryDecoder : public Decoder {
       default:
         ParquetException::NYI("Unsupported dictionary type");
     }
+  }
+
+  virtual int GetSize() {
+    return len_;
   }
 
   virtual void SetData(int num_values, const uint8_t* data, int len) {
@@ -138,6 +142,7 @@ class DictionaryDecoder : public Decoder {
   std::vector<uint8_t> byte_array_data_;
 
   impala::RleDecoder idx_decoder_;
+  int len_;
 };
 
 }

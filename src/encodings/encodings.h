@@ -30,7 +30,11 @@ class Decoder {
 
   // Sets the data for a new page. This will be called multiple times on the same
   // decoder and should reset all internal state.
+  // the *data* might contains more data than the decoder could consume
   virtual void SetData(int num_values, const uint8_t* data, int len) = 0;
+
+  // Get the total size of data consumed by the decoder
+  virtual int GetSize() = 0;
 
   // Subclasses should override the ones they support. In each of these functions,
   // the decoder would decode put to 'max_values', storing the result in 'buffer'.

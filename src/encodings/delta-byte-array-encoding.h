@@ -24,12 +24,14 @@ class DeltaByteArrayDecoder : public Decoder {
   DeltaByteArrayDecoder()
     : Decoder(parquet::Type::BYTE_ARRAY, parquet::Encoding::DELTA_BYTE_ARRAY),
       prefix_len_decoder_(parquet::Type::INT32),
-      suffix_decoder_() {
+      suffix_decoder_(),
+      len_(0) {
   }
 
   virtual void SetData(int num_values, const uint8_t* data, int len) {
     num_values_ = num_values;
     if (len == 0) return;
+    len_ = len;
     int prefix_len_length = *reinterpret_cast<const int*>(data);
     data += 4;
     len -= 4;
@@ -37,6 +39,10 @@ class DeltaByteArrayDecoder : public Decoder {
     data += prefix_len_length;
     len -= prefix_len_length;
     suffix_decoder_.SetData(num_values, data, len);
+  }
+
+  virtual int GetSize() {
+    return len_;
   }
 
   // TODO: this doesn't work and requires memory management. We need to allocate
@@ -65,6 +71,7 @@ class DeltaByteArrayDecoder : public Decoder {
   DeltaBitPackDecoder prefix_len_decoder_;
   DeltaLengthByteArrayDecoder suffix_decoder_;
   ByteArray last_value_;
+  int len_;
 };
 
 }

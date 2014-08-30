@@ -204,9 +204,9 @@ bool ColumnReader::ReadNewPage() {
       if (it != decoders_.end()) {
         current_decoder_ = it->second.get();
       } else {
+        shared_ptr<Decoder> decoder;
         switch (encoding) {
           case Encoding::PLAIN: {
-            shared_ptr<Decoder> decoder;
             if (schema_->type == Type::BOOLEAN) {
               decoder.reset(new BoolDecoder());
             } else {
@@ -219,9 +219,19 @@ bool ColumnReader::ReadNewPage() {
           case Encoding::RLE_DICTIONARY:
             throw ParquetException("Dictionary page must be before data page.");
 
-          case Encoding::DELTA_BINARY_PACKED:
+          case Encoding::DELTA_BINARY_PACKED: {
+            decoder.reset(new DeltaBitPackDecoder(schema_->type));
+            decoders_[encoding] = decoder;
+            current_decoder_ = decoder.get();
+            break;
+          }
+          case Encoding::DELTA_BYTE_ARRAY: {
+            decoder.reset(new DeltaByteArrayDecoder());
+            decoders_[encoding] = decoder;
+            current_decoder_ = decoder.get();
+            break;
+          }
           case Encoding::DELTA_LENGTH_BYTE_ARRAY:
-          case Encoding::DELTA_BYTE_ARRAY:
             ParquetException::NYI("Unsupported encoding");
 
           default:

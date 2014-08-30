@@ -31,6 +31,10 @@ class PlainDecoder : public Decoder {
     len_ = len;
   }
 
+  virtual int GetSize() {
+    return len_;
+  }
+
   int GetValues(void* buffer, int max_values, int byte_size) {
     max_values = std::min(max_values, num_values_);
     int size = max_values * byte_size;
