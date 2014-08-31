@@ -29,11 +29,10 @@ class DeltaLengthByteArrayDecoder : public Decoder {
   virtual void SetData(int num_values, const uint8_t* data, int len) {
     num_values_ = num_values;
     if (len == 0) return;
-    int total_lengths_len = *reinterpret_cast<const int*>(data);
-    data += 4;
-    len_decoder_.SetData(num_values, data, total_lengths_len);
+    len_decoder_.SetData(num_values, data, len);
+    int total_lengths_len = len_decoder_.GetSize();
     data_ = data + total_lengths_len;
-    len_ = len - 4 - total_lengths_len;
+    len_ = len - total_lengths_len;
   }
 
   virtual int GetSize() {

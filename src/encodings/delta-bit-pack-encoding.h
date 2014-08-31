@@ -30,15 +30,39 @@ class DeltaBitPackDecoder : public Decoder {
 
   virtual void SetData(int num_values, const uint8_t* data, int len) {
     num_values_ = num_values;
+    data_ = data;
     decoder_ = impala::BitReader(data, len);
     values_current_block_ = 0;
     values_current_mini_block_ = 0;
     total_values_ = 0;
-    len_ = len;
+    len_ = -len;
     readBlockHeader();
+    GetSize();
   }
 
   virtual int GetSize() {
+    if (len_ < 0) {
+      int i = 1;
+      len_ = 0 - len_;
+      int len = len_ - decoder_.bytes_left();
+      while ( i < values_current_block_) {
+        int64_t dummy;
+        impala::BitReader rd = impala::BitReader(data_ + len,  len_ - len);
+        rd.GetZigZagVlqInt(&dummy);
+        int value_bytes = 0;
+        for (int j = 0; j < num_mini_blocks_; ++j) {
+          uint8_t bit_width = 0;
+          if (!rd.GetAligned<uint8_t>(1, &bit_width)) {
+            ParquetException::EofException();
+          }
+          value_bytes += (bit_width * values_per_mini_block_) >> 3;
+        }
+        len = len_ - rd.bytes_left();
+        len += value_bytes;
+        i += values_per_mini_block_;
+      }
+      len_ = len;
+    }
     return len_;
   }
 
@@ -108,6 +132,7 @@ class DeltaBitPackDecoder : public Decoder {
   }
 
   impala::BitReader decoder_;
+  const uint8_t* data_;
   uint64_t block_size_;
   uint64_t values_current_block_;
   uint64_t num_mini_blocks_;

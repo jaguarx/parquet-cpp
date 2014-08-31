@@ -32,10 +32,8 @@ class DeltaByteArrayDecoder : public Decoder {
     num_values_ = num_values;
     if (len == 0) return;
     len_ = len;
-    int prefix_len_length = *reinterpret_cast<const int*>(data);
-    data += 4;
-    len -= 4;
-    prefix_len_decoder_.SetData(num_values, data, prefix_len_length);
+    prefix_len_decoder_.SetData(num_values, data, len);
+    int prefix_len_length = prefix_len_decoder_.GetSize();
     data += prefix_len_length;
     len -= prefix_len_length;
     suffix_decoder_.SetData(num_values, data, len);
