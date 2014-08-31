@@ -34,7 +34,6 @@ class DeltaBitPackDecoder : public Decoder {
     decoder_ = impala::BitReader(data, len);
     values_current_block_ = 0;
     values_current_mini_block_ = 0;
-    total_values_ = 0;
     len_ = -len;
     readBlockHeader();
     GetSize();
@@ -83,6 +82,7 @@ class DeltaBitPackDecoder : public Decoder {
     }
     if (!decoder_.GetZigZagVlqInt(&last_value_)) ParquetException::EofException();
     values_per_mini_block_ = block_size_ / num_mini_blocks_;
+    is_first_value_ = true;
   }
   void InitBlock() {
     delta_bit_widths_.resize(num_mini_blocks_);
@@ -101,20 +101,20 @@ class DeltaBitPackDecoder : public Decoder {
   template <typename T>
   int GetInternal(T* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
-    for (int i = 0; i < max_values; ++i, ++total_values_) {
+    int i = 0;
+    if (is_first_value_ && max_values > 0) {
+      buffer[0] = last_value_;
+      ++i;
+    }
+    for (; i < max_values; ++i) {
       if (UNLIKELY(values_current_mini_block_ == 0)) {
         ++mini_block_idx_;
         if (mini_block_idx_ < delta_bit_widths_.size()) {
           delta_bit_width_ = delta_bit_widths_[mini_block_idx_];
           values_current_mini_block_ = values_per_mini_block_;
         } else {
-          if (total_values_ == 0)
-            buffer[i] = last_value_;
-          else {
-            i--; total_values_ --;
-          }
           InitBlock();
-          buffer[i] = last_value_;
+          --i;
           continue;
         }
       }
@@ -144,7 +144,7 @@ class DeltaBitPackDecoder : public Decoder {
   std::vector<uint8_t> delta_bit_widths_;
   int delta_bit_width_;
 
-  int64_t total_values_;
+  bool is_first_value_;
   int64_t last_value_;
   int len_;
 };
