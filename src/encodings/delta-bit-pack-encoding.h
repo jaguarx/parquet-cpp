@@ -103,6 +103,7 @@ class DeltaBitPackDecoder : public Decoder {
     max_values = std::min(max_values, num_values_);
     int i = 0;
     if (is_first_value_ && max_values > 0) {
+      is_first_value_ = false;
       buffer[0] = last_value_;
       ++i;
     }
