@@ -56,10 +56,10 @@ class DeltaBitPackDecoder : public Decoder {
             ParquetException::EofException();
           }
           value_bytes += (bit_width * values_per_mini_block_) >> 3;
+          i += values_per_mini_block_;
         }
         len = len_ - rd.bytes_left();
         len += value_bytes;
-        i += values_per_mini_block_;
       }
       len_ = len;
     }
