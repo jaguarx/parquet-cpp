@@ -36,7 +36,9 @@ class PlainDecoder : public Decoder {
   }
 
   int GetValues(void* buffer, int max_values, int byte_size) {
-    max_values = std::min(max_values, num_values_);
+    int num_not_null_values = len_ / byte_size;
+    int num_aval_values = std::min(num_not_null_values, num_values_);
+    max_values = std::min(max_values, num_aval_values);
     int size = max_values * byte_size;
     if (len_ < size)  ParquetException::EofException();
     memcpy(buffer, data_, size);
@@ -64,14 +66,16 @@ class PlainDecoder : public Decoder {
 
   virtual int GetByteArray(ByteArray* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
-    for (int i = 0; i < max_values; ++i) {
+    int values = 0;
+    for (int i = 0; i < max_values && len_ > 0; ++i) {
       buffer[i].len = *reinterpret_cast<const uint32_t*>(data_);
       if (len_ < sizeof(uint32_t) + buffer[i].len) ParquetException::EofException();
       buffer[i].ptr = data_ + sizeof(uint32_t);
       data_ += sizeof(uint32_t) + buffer[i].len;
       len_ -= sizeof(uint32_t) + buffer[i].len;
+      values ++;
     }
-    num_values_ -= max_values;
+    num_values_ -= values;
     return max_values;
   }
 

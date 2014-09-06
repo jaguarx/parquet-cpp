@@ -15,6 +15,7 @@
 #include "parquet/parquet.h"
 #include "encodings/encodings.h"
 #include "compression/codec.h"
+#include "impala/bit-util.h"
 
 #include <string>
 #include <string.h>
@@ -26,6 +27,7 @@ const int DATA_PAGE_SIZE = 64 * 1024;
 using namespace boost;
 using namespace parquet;
 using namespace std;
+using impala::BitUtil;
 
 namespace parquet_cpp {
 
@@ -48,10 +50,14 @@ ColumnReader::~ColumnReader() {
 }
 
 ColumnReader::ColumnReader(const ColumnMetaData* metadata,
-    const SchemaElement* schema, InputStream* stream)
+    const SchemaElement* schema, InputStream* stream,
+    int max_repetition_level,
+    int max_definition_level)
   : metadata_(metadata),
     schema_(schema),
     stream_(stream),
+    max_repetition_level_(max_repetition_level),
+    max_definition_level_(max_definition_level),
     current_decoder_(NULL),
     num_buffered_values_(0),
     num_decoded_values_(0),
@@ -181,18 +187,27 @@ bool ColumnReader::ReadNewPage() {
       // Read a data page.
       num_buffered_values_ = current_page_header_.data_page_header.num_values;
 
-      // Read definition levels.
-      if (schema_->repetition_type != FieldRepetitionType::REQUIRED) {
+      // repetition levels
+      if (max_repetition_level_ > 0) {
+        int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
+        int num_repetition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
+        buffer += sizeof(uint32_t);
+        repetition_level_decoder_.reset(
+            new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
+        buffer += num_repetition_bytes;
+        uncompressed_len -= sizeof(uint32_t) + num_repetition_bytes;
+      }
+
+      // definition levels.
+      if (max_definition_level_ > 0) {
+        int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
         int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         buffer += sizeof(uint32_t);
         definition_level_decoder_.reset(
-            new impala::RleDecoder(buffer, num_definition_bytes, 1));
+            new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
         buffer += num_definition_bytes;
-        uncompressed_len -= sizeof(uint32_t);
-        uncompressed_len -= num_definition_bytes;
+        uncompressed_len -= sizeof(uint32_t) + num_definition_bytes;
       }
-
-      // TODO: repetition levels
 
       // Get a decoder object for this page or create a new decoder if this is the
       // first page with this encoding.
@@ -247,6 +262,80 @@ bool ColumnReader::ReadNewPage() {
   }
   return true;
 }
+
+int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, const string& path) {
+  const SchemaElement&  parent = schema[fid];
+  string& fullpath = _element_paths[fid];
+  if (fid != ROOT_NODE) {
+    if (parent.repetition_type == FieldRepetitionType::REPEATED)
+      rep_level += 1;
+    if (parent.repetition_type != FieldRepetitionType::REQUIRED)
+      def_level += 1;
+    if (path.length() > 0) {
+      fullpath.append(path);
+      fullpath.append(".");
+    }
+    fullpath.append(parent.name);
+    //ppath = path[:]
+    //ppath.append(parent.name)
+    //self._element_path[fid] = ppath
+  }
+  _max_repetition_levels[fid] = rep_level;
+  _max_definition_levels[fid] = def_level;
+  if (!parent.__isset.num_children)
+    return 1;
+
+  int num_children = parent.num_children;
+  int chd = fid + 1;
+  while (num_children > 0) {
+    num_children -= 1;
+    _child_to_parent[chd] = fid;
+    _parent_to_child[fid].push_back(chd);
+    chd += _rebuild_tree(chd, rep_level, def_level, fullpath
+             //   self._element_path[fid]
+           );
+  }
+  return chd - fid;
+}
+
+
+void SchemaHelper::BuildFSM(std::vector<std::string>& fields, SchemaFSM& fsm) {
+
+}
+
+int SchemaHelper::_build_child_fsm(int fid, vector<vector<SchemaFSM::edge_t> >& edges){
+  const vector<int>& child_ids = _parent_to_child[fid];
+  for (int i=0; i<child_ids.size(); ++i) {
+    int cid = child_ids[i];
+    SchemaElement& element = schema[cid];
+    int rep_level = _max_repetition_levels[cid];
+    vector<SchemaFSM::edge_t>& subedges = edges[cid];
+    subedges.resize(rep_level+1);
+    for (int r = 0; r < rep_level; ++r) {
+      if ( i + 1 == child_ids.size() ) {
+        subedges[r].next = fid;
+        subedges[r].type = ( fid == ROOT_NODE)? STAY:FOLLOW;
+      } else {
+        subedges[r].next = child_ids[i+1];
+        subedges[r].type = STAY;
+      }
+    }
+    if (element.repetition_type == FieldRepetitionType::REPEATED)
+      subedges[rep_level] = SchemaFSM::edge_t(cid, STAY);
+    if (element.__isset.num_children && element.num_children > 0) {
+      _build_child_fsm(cid, edges);
+    }
+  }
+  return 0;
+}
+
+void SchemaHelper::BuildFullFSM(SchemaFSM& fsm) {
+  vector<vector<SchemaFSM::edge_t> > edges;
+  edges.resize(schema.size());
+  _build_child_fsm(ROOT_NODE, edges);
+  fsm.init(edges);
+}
+
 
 }
 

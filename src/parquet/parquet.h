@@ -17,6 +17,7 @@
 
 #include <exception>
 #include <sstream>
+#include <map>
 #include <boost/cstdint.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/unordered_map.hpp>
@@ -101,6 +102,71 @@ class InMemoryInputStream : public InputStream {
   int64_t offset_;
 };
 
+enum SchemaConstants {
+  ROOT_NODE = 0,
+  STAY = 1,
+  FOLLOW = 2,
+};
+
+class SchemaFSM {
+public:
+  struct edge_t{
+    edge_t(int n=ROOT_NODE, int t=STAY):next(n), type(t){}
+    int next;
+    int type;
+  };
+
+  SchemaFSM() {}
+
+  void init(std::vector<std::vector<edge_t> >& states) {
+    states_.swap(states);
+  }
+
+  edge_t GetNextState(int state, int rep_level) {
+    return states_[state][rep_level];
+  }
+private:
+  std::vector<std::vector<edge_t> > states_;
+};
+
+class SchemaHelper {
+public:
+  SchemaHelper (std::vector<parquet::SchemaElement>& _schema):schema(_schema){
+    _max_definition_levels.resize(schema.size());
+    _max_repetition_levels.resize(schema.size());
+    _child_to_parent.resize(schema.size());
+    _parent_to_child.resize(schema.size());
+    _element_paths.resize(schema.size());
+    _rebuild_tree(ROOT_NODE, 0, 0, "");
+  }
+
+  int GetMaxDefinitionLevel(int col_idx) const {
+    return _max_definition_levels[col_idx];
+  }
+
+  int GetMaxRepetitionLevel(int col_idx) const{
+    return _max_repetition_levels[col_idx];
+  }
+
+  const std::string& GetElementPath(int col_idx) const {
+    return _element_paths[col_idx];
+  }
+
+  void BuildFullFSM(SchemaFSM& fsm);
+  void BuildFSM(std::vector<std::string>& fields, SchemaFSM& fsm);
+  
+  std::vector<parquet::SchemaElement>& schema;
+
+private:
+  int _build_child_fsm(int fid, std::vector<std::vector<SchemaFSM::edge_t> >& edges);
+  int _rebuild_tree(int fid, int rep_level, int def_level, const std::string& path);
+  std::vector<int> _max_definition_levels;
+  std::vector<int> _max_repetition_levels;
+  std::vector<int> _child_to_parent;
+  std::vector<std::vector<int> > _parent_to_child;
+  std::vector<std::string> _element_paths;
+};
+
 // API to read values from a single column. This is the main client facing API.
 class ColumnReader {
  public:
@@ -115,7 +181,9 @@ class ColumnReader {
   };
 
   ColumnReader(const parquet::ColumnMetaData*,
-      const parquet::SchemaElement*, InputStream* stream);
+      const parquet::SchemaElement*, InputStream* stream, 
+      int max_repetition_level,
+      int max_definition_level);
 
   ~ColumnReader();
 
@@ -157,6 +225,10 @@ class ColumnReader {
   boost::scoped_ptr<impala::RleDecoder> definition_level_decoder_;
   // Not set for flat schemas.
   boost::scoped_ptr<impala::RleDecoder> repetition_level_decoder_;
+
+  int max_repetition_level_;
+  int max_definition_level_;
+
   Decoder* current_decoder_;
   int num_buffered_values_;
 
@@ -164,7 +236,6 @@ class ColumnReader {
   int num_decoded_values_;
   int buffered_values_offset_;
 };
-
 
 inline bool ColumnReader::HasNext() {
   if (num_buffered_values_ == 0) {
@@ -211,12 +282,18 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
 }
 
 inline bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
-  *rep_level = 1;
-  if (definition_level_decoder_ != NULL) {
+  if (max_repetition_level_ > 0) {
+    if (!repetition_level_decoder_->Get(rep_level)) ParquetException::EofException();
+  } else {
+    *rep_level = 0;
+  }
+  if (max_definition_level_ > 0) {
     if (!definition_level_decoder_->Get(def_level)) ParquetException::EofException();
+  } else {
+    *def_level = 0;
   }
   --num_buffered_values_;
-  return *def_level == 0;
+  return *def_level < max_definition_level_;
 }
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain

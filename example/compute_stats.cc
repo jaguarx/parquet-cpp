@@ -46,6 +46,15 @@ int ByteCompare(const ByteArray& x1, const ByteArray& x2) {
   return 0;
 }
 
+string build_path_name(vector<string> path_in_schema) {
+  stringstream ss;
+  for (int i=0; i<path_in_schema.size(); ++i) {
+    if (i>0)
+      ss << ".";
+    ss << path_in_schema[i];
+  }
+  return ss.str();
+}
 // Simple example which reads all the values in the file and outputs the number of
 // values, number of nulls and min/max for each column.
 int main(int argc, char** argv) {
@@ -58,7 +67,17 @@ int main(int argc, char** argv) {
   FileMetaData metadata;
   if (!GetFileMetadata(argv[1], &metadata)) return -1;
 
-  cout << "col_idx: " << col_idx << " : " << metadata.schema[col_idx].name << "\n";
+  SchemaHelper helper(metadata.schema);
+  const SchemaElement& schemaelement = metadata.schema[col_idx];
+  string col_name = helper.GetElementPath(col_idx);
+  int max_rep_level = helper.GetMaxRepetitionLevel(col_idx);
+  int max_def_level = helper.GetMaxDefinitionLevel(col_idx);
+
+  cout << "col_idx: " << col_idx 
+      << " : " << col_name 
+      << ", max_repetition_level:"<< max_rep_level
+      << ", max_definition_level:"<< max_def_level
+      << "\n";
   FILE* file = fopen(argv[1], "r");
   if (file == NULL) {
     cerr << "Could not open file: " << argv[1] << endl;
@@ -68,11 +87,10 @@ int main(int argc, char** argv) {
   for (int i = 0; i < metadata.row_groups.size(); ++i) {
     const RowGroup& row_group = metadata.row_groups[i];
     for (int c = 0; c < row_group.columns.size(); ++c) {
-      if (col_idx != -1 && col_idx != c) continue;
-      const ColumnChunk& col = row_group.columns[col_idx-1];
-      const SchemaElement& schemaelement = metadata.schema[col_idx];
-      cout << "Reading column " << schemaelement.name << " (idx=" << c << ", type=" 
-           << metadata.schema[c].type << ")\n";
+      const ColumnChunk& col = row_group.columns[c];
+      string row_grp_pathname = build_path_name(col.meta_data.path_in_schema);
+      if (col_name.compare(row_grp_pathname) != 0) continue;
+
       if (col.meta_data.type == Type::INT96) {
         cout << "  Skipping unsupported column" << endl;
         continue;
@@ -96,7 +114,7 @@ int main(int argc, char** argv) {
       }
 
       InMemoryInputStream input(&column_buffer[0], column_buffer.size());
-      ColumnReader reader(&col.meta_data, &schemaelement, &input);
+      ColumnReader reader(&col.meta_data, &schemaelement, &input, max_rep_level, max_def_level);
 
       bool first_val = true;
       AnyType min, max;
@@ -108,7 +126,7 @@ int main(int argc, char** argv) {
         switch (col.meta_data.type) {
           case Type::BOOLEAN: {
             bool val = reader.GetBool(&def_level, &rep_level);
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.bool_val = max.bool_val = val;
               first_val = false;
@@ -120,7 +138,7 @@ int main(int argc, char** argv) {
           }
           case Type::INT32: {
             int32_t val = reader.GetInt32(&def_level, &rep_level);;
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.int32_val = max.int32_val = val;
               first_val = false;
@@ -132,7 +150,7 @@ int main(int argc, char** argv) {
           }
           case Type::INT64: {
             int64_t val = reader.GetInt64(&def_level, &rep_level);;
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.int64_val = max.int64_val = val;
               first_val = false;
@@ -144,7 +162,7 @@ int main(int argc, char** argv) {
           }
           case Type::FLOAT: {
             float val = reader.GetFloat(&def_level, &rep_level);;
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.float_val = max.float_val = val;
               first_val = false;
@@ -156,7 +174,7 @@ int main(int argc, char** argv) {
           }
           case Type::DOUBLE: {
             double val = reader.GetDouble(&def_level, &rep_level);;
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.double_val = max.double_val = val;
               first_val = false;
@@ -168,7 +186,7 @@ int main(int argc, char** argv) {
           }
           case Type::BYTE_ARRAY: {
             ByteArray val = reader.GetByteArray(&def_level, &rep_level);;
-            if (def_level < rep_level) break;
+            if (def_level < max_def_level) break;
             if (first_val) {
               min.byte_array_val = max.byte_array_val = val;
               first_val = false;
@@ -186,7 +204,7 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if (def_level < rep_level) ++num_nulls;
+        if (def_level < max_def_level) ++num_nulls;
         ++num_values;
       }
 
