@@ -37,6 +37,7 @@ class DeltaByteArrayDecoder : public Decoder {
     data += prefix_len_length;
     len -= prefix_len_length;
     suffix_decoder_.SetData(num_values, data, len);
+    num_values_ = prefix_len_decoder_.GetNumValues();
   }
 
   virtual int GetSize() {

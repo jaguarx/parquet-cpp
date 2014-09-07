@@ -24,6 +24,8 @@
 
 namespace parquet_cpp {
 
+class ByteArray;
+
 class Decoder {
  public:
   virtual ~Decoder() {}
@@ -82,6 +84,7 @@ class Decoder {
 #include "delta-bit-pack-encoding.h"
 #include "delta-length-byte-array-encoding.h"
 #include "delta-byte-array-encoding.h"
+#include "rle-encoding.h"
 
 #endif
 

@@ -103,15 +103,42 @@ int main(int argc, char** argv) {
         }
       }
       cout << " offset:"<< col_start << "\n";
+      size_t read_offset = col_start;
       fseek(file, col_start, SEEK_SET);
+
+      size_t total_size = col.meta_data.total_compressed_size;
       vector<uint8_t> column_buffer;
-      column_buffer.resize(col.meta_data.total_compressed_size);
-      cerr << "total_size: " << col.meta_data.total_compressed_size<<"\n";
+      column_buffer.resize(total_size);
       size_t num_read = fread(&column_buffer[0], 1, column_buffer.size(), file);
-      if (num_read != column_buffer.size()) {
-        cerr << "Could not read column data." << endl;
-        continue;
+
+      //total_compressed_size might be incorrect, need to scan through the page headers
+      //to find out the correct size
+      int total_values = 0;
+      uint8_t* buf = &column_buffer[0];
+      total_size = 0;
+      while (total_values < col.meta_data.num_values) {
+        uint32_t header_size = column_buffer.size() - (buf - &column_buffer[0]);
+        parquet::PageHeader page_header;
+        DeserializeThriftMsg(buf, &header_size, &page_header);
+        total_size += header_size + page_header.compressed_page_size;
+        buf += header_size + page_header.compressed_page_size;
+        if (page_header.type == PageType::DATA_PAGE) {
+          total_values += page_header.data_page_header.num_values;
+        } else if (page_header.type == PageType::DATA_PAGE_V2) {
+          total_values += page_header.data_page_header_v2.num_values;
+        }
       }
+      cerr << "total_size: " << total_size 
+           << "/" << col.meta_data.total_compressed_size << "\n";
+      if (total_size > col.meta_data.total_compressed_size) {
+        size_t current_size = column_buffer.size();
+        column_buffer.resize(total_size);
+        size_t num_read = fread(&column_buffer[current_size], 1, total_size - current_size, file);
+        if (num_read != (total_size - current_size)) {
+          cerr << "Could not read column data." << endl;
+          continue;
+        }
+      } 
 
       InMemoryInputStream input(&column_buffer[0], column_buffer.size());
       ColumnReader reader(&col.meta_data, &schemaelement, &input, max_rep_level, max_def_level);

@@ -24,8 +24,6 @@
 #include "gen-cpp/parquet_constants.h"
 #include "gen-cpp/parquet_types.h"
 
-#include "impala/rle-encoding.h"
-
 // TCompactProtocol requires some #defines to work right.
 #define SIGNED_RIGHT_SHIFT_IS 1
 #define ARITHMETIC_RIGHT_SHIFT 1
@@ -222,9 +220,9 @@ class ColumnReader {
   parquet::PageHeader current_page_header_;
 
   // Not set if field is required.
-  boost::scoped_ptr<impala::RleDecoder> definition_level_decoder_;
+  boost::scoped_ptr<parquet_cpp::Decoder> definition_level_decoder_;
   // Not set for flat schemas.
-  boost::scoped_ptr<impala::RleDecoder> repetition_level_decoder_;
+  boost::scoped_ptr<parquet_cpp::Decoder> repetition_level_decoder_;
 
   int max_repetition_level_;
   int max_definition_level_;
@@ -279,21 +277,6 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
   if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
   if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
   return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
-  if (max_repetition_level_ > 0) {
-    if (!repetition_level_decoder_->Get(rep_level)) ParquetException::EofException();
-  } else {
-    *rep_level = 0;
-  }
-  if (max_definition_level_ > 0) {
-    if (!definition_level_decoder_->Get(def_level)) ParquetException::EofException();
-  } else {
-    *def_level = 0;
-  }
-  --num_buffered_values_;
-  return *def_level < max_definition_level_;
 }
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain

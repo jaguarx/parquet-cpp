@@ -55,8 +55,10 @@ class DeltaBitPackDecoder : public Decoder {
           if (!rd.GetAligned<uint8_t>(1, &bit_width)) {
             ParquetException::EofException();
           }
-          value_bytes += (bit_width * values_per_mini_block_) >> 3;
-          i += values_per_mini_block_;
+          if (i < values_current_block_) {
+            value_bytes += (bit_width * values_per_mini_block_) >> 3;
+            i += values_per_mini_block_;
+          }
         }
         len = len_ - rd.bytes_left();
         len += value_bytes;
@@ -74,6 +76,10 @@ class DeltaBitPackDecoder : public Decoder {
     return GetInternal(buffer, max_values);
   }
 
+  uint64_t GetNumValues() const {
+    return num_values_;
+  }
+
  private:
   void readBlockHeader() {
     if (!decoder_.GetVlqInt(&block_size_)) ParquetException::EofException();
@@ -81,6 +87,7 @@ class DeltaBitPackDecoder : public Decoder {
     if (!decoder_.GetVlqInt(&values_current_block_)) {
       ParquetException::EofException();
     }
+    num_values_ = values_current_block_;
     if (!decoder_.GetZigZagVlqInt(&last_value_)) ParquetException::EofException();
     values_per_mini_block_ = block_size_ / num_mini_blocks_;
     is_first_value_ = true;
@@ -115,7 +122,7 @@ class DeltaBitPackDecoder : public Decoder {
     } while(r > 0 && i < values_per_mini_block_);
     if ( r < 0) return false;
     values_current_mini_block_ = 0;
-    for(i=0; i<values_per_mini_block_;++i) {
+    for ( i = 0; i < values_per_mini_block_;++i) {
       int delta = deltas[i] + min_delta_;
       last_value_ += delta;
       mini_block_buffer_[values_current_mini_block_] = last_value_;
@@ -148,12 +155,6 @@ class DeltaBitPackDecoder : public Decoder {
         }
       }
 
-      // TODO: the key to this algorithm is to decode the entire miniblock at once.
-      /*
-      int64_t delta;
-      if (!decoder_.GetValue(delta_bit_width_, &delta)) ParquetException::EofException();
-      delta += min_delta_;
-      last_value_ += delta; */
       buffer[i] = mini_block_buffer_[values_per_mini_block_ - values_current_mini_block_];
       --values_current_mini_block_;
     }

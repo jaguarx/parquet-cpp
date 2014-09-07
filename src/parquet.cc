@@ -185,33 +185,42 @@ bool ColumnReader::ReadNewPage() {
       continue;
     } else if (current_page_header_.type == PageType::DATA_PAGE) {
       // Read a data page.
-      num_buffered_values_ = current_page_header_.data_page_header.num_values;
+      const DataPageHeader& data_page_header = current_page_header_.data_page_header;
+      num_buffered_values_ = data_page_header.num_values;
 
       // repetition levels
       if (max_repetition_level_ > 0) {
         int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
-        int num_repetition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
-        buffer += sizeof(uint32_t);
-        repetition_level_decoder_.reset(
-            new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
-        buffer += num_repetition_bytes;
-        uncompressed_len -= sizeof(uint32_t) + num_repetition_bytes;
+
+        if (data_page_header.repetition_level_encoding == Encoding::RLE)
+          repetition_level_decoder_.reset(new parquet_cpp::RleDecoder(parquet::Type::INT32, bitwidth));
+        else
+          throw ParquetException("unsupported repetition encoding.");
+
+        repetition_level_decoder_->SetData(data_page_header.num_values,
+          buffer, uncompressed_len);
+        buffer += repetition_level_decoder_->GetSize();
+        uncompressed_len -= repetition_level_decoder_->GetSize();
       }
 
       // definition levels.
       if (max_definition_level_ > 0) {
         int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
-        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
-        buffer += sizeof(uint32_t);
-        definition_level_decoder_.reset(
-            new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
-        buffer += num_definition_bytes;
-        uncompressed_len -= sizeof(uint32_t) + num_definition_bytes;
+
+        if (data_page_header.definition_level_encoding == Encoding::RLE)
+          definition_level_decoder_.reset(new parquet_cpp::RleDecoder(parquet::Type::INT32, bitwidth));
+        else
+          throw ParquetException("unsupported definition encoding.");
+
+        definition_level_decoder_->SetData(data_page_header.num_values,
+          buffer, uncompressed_len);
+        buffer += definition_level_decoder_->GetSize();
+        uncompressed_len -= definition_level_decoder_->GetSize();
       }
 
       // Get a decoder object for this page or create a new decoder if this is the
       // first page with this encoding.
-      Encoding::type encoding = current_page_header_.data_page_header.encoding;
+      Encoding::type encoding = data_page_header.encoding;
       if (IsDictionaryIndexEncoding(encoding)) encoding = Encoding::RLE_DICTIONARY;
 
       unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
@@ -261,6 +270,21 @@ bool ColumnReader::ReadNewPage() {
     }
   }
   return true;
+}
+
+bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
+  if (max_repetition_level_ > 0) {
+    if (1 != repetition_level_decoder_->GetInt32(rep_level, 1)) ParquetException::EofException();
+  } else {
+    *rep_level = 0;
+  }
+  if (max_definition_level_ > 0) {
+    if (1 != definition_level_decoder_->GetInt32(def_level, 1)) ParquetException::EofException();
+  } else {
+    *def_level = 0;
+  }
+  --num_buffered_values_;
+  return *def_level < max_definition_level_;
 }
 
 int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, const string& path) {
