@@ -48,19 +48,22 @@ class DeltaByteArrayDecoder : public Decoder {
   // new strings to store the results.
   virtual int GetByteArray(ByteArray* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
+    int prefix_lens[max_values];
+    prefix_len_decoder_.GetInt32(prefix_lens, max_values);
+    suffix_decoder_.GetByteArray(buffer, max_values);
     for (int  i = 0; i < max_values; ++i) {
-      int prefix_len = 0;
-      prefix_len_decoder_.GetInt32(&prefix_len, 1);
-      ByteArray suffix;
-      suffix_decoder_.GetByteArray(&suffix, 1);
-      buffer[i].len = prefix_len + suffix.len;
+      int prefix_len = prefix_lens[i];
+      ByteArray& suffix = buffer[i];
+      ByteArray item;
+      item.len = prefix_len + suffix.len;
 
-      uint8_t* result = reinterpret_cast<uint8_t*>(malloc(buffer[i].len));
+      uint8_t* result = reinterpret_cast<uint8_t*>(malloc(item.len));
       memcpy(result, last_value_.ptr, prefix_len);
       memcpy(result + prefix_len, suffix.ptr, suffix.len);
 
-      buffer[i].ptr = result;
-      last_value_ = buffer[i];
+      item.ptr = result;
+      buffer[i] = item;
+      last_value_ = item;
     }
     num_values_ -= max_values;
     return max_values;
