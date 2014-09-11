@@ -702,6 +702,7 @@ int unpack31_8(uint8_t* in, T* out) {
 template<class T>
 int unpack_8(int bitwidth, uint8_t* in, T* out) {
   switch(bitwidth) {
+  case 0: return unpack0_8(in, out);
   case 1: return unpack1_8(in, out);
   case 2: return unpack2_8(in, out);
   case 3: return unpack3_8(in, out);
