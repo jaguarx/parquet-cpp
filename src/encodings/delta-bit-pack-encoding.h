@@ -118,8 +118,8 @@ class DeltaBitPackDecoder : public Decoder {
     uint8_t* pblock = mini_block;
     do {
       r = unpack_8<uint32_t>(delta_bit_width_, pblock, deltas+i);
-      if (r > 0) { pblock += r; i+=8; }
-    } while(r > 0 && i < values_per_mini_block_);
+      if (r >= 0) { pblock += r; i+=8; }
+    } while(r >= 0 && i < values_per_mini_block_);
     if ( r < 0) return false;
     values_current_mini_block_ = 0;
     for ( i = 0; i < values_per_mini_block_;++i) {

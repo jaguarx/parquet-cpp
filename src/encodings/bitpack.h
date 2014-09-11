@@ -1,5 +1,12 @@
 
 template <class T>
+int unpack0_8(uint8_t* in, T* out) {
+  memset(out, 0, 8*sizeof(T));
+  return 0;
+}
+
+
+template <class T>
 int unpack1_8(uint8_t* in, T* out) {
   uint32_t t = 0;
   t = ((uint32_t)in[0]);
