@@ -18,7 +18,8 @@
 #include <exception>
 #include <sstream>
 #include <map>
-#include <boost/cstdint.hpp>
+
+//#include <boost/cstdint.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/unordered_map.hpp>
 #include "gen-cpp/parquet_constants.h"
@@ -106,25 +107,26 @@ enum SchemaConstants {
   FOLLOW = 2,
 };
 
+struct edge_t{
+  edge_t(int n=ROOT_NODE, int t=STAY):next(n), type(t){}
+  int next;
+  int type;
+};
+
 class SchemaFSM {
 public:
-  struct edge_t{
-    edge_t(int n=ROOT_NODE, int t=STAY):next(n), type(t){}
-    int next;
-    int type;
-  };
-
   SchemaFSM() {}
 
-  void init(std::vector<std::vector<edge_t> >& states) {
+  void init(std::vector<std::vector<int> >& states) {
     states_.swap(states);
   }
 
-  edge_t GetNextState(int state, int rep_level) {
+  int GetNextState(int state, int rep_level) {
     return states_[state][rep_level];
   }
+  void dump(std::ostream& oss) const;
 private:
-  std::vector<std::vector<edge_t> > states_;
+  std::vector<std::vector<int> > states_;
 };
 
 class SchemaHelper {
@@ -150,19 +152,24 @@ public:
     return _element_paths[col_idx];
   }
 
-  void BuildFullFSM(SchemaFSM& fsm);
-  void BuildFSM(std::vector<std::string>& fields, SchemaFSM& fsm);
-  
+  void BuildFullFSM();
+  void BuildFSM(const std::vector<std::string>& fields, SchemaFSM& fsm);
+
   std::vector<parquet::SchemaElement>& schema;
 
 private:
-  int _build_child_fsm(int fid, std::vector<std::vector<SchemaFSM::edge_t> >& edges);
+  int _build_child_fsm(int fid);
   int _rebuild_tree(int fid, int rep_level, int def_level, const std::string& path);
+  int _follow_fsm(int fid, int rep_lvl);
+  int _compress_state(int fid, int rep_lvl, const std::vector<int>& fields);
+
   std::vector<int> _max_definition_levels;
   std::vector<int> _max_repetition_levels;
   std::vector<int> _child_to_parent;
   std::vector<std::vector<int> > _parent_to_child;
   std::vector<std::string> _element_paths;
+  std::map<std::string, int> _path_to_id;
+  std::vector<std::vector<edge_t> > _edges;
 };
 
 // API to read values from a single column. This is the main client facing API.

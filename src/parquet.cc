@@ -18,6 +18,7 @@
 #include "impala/bit-util.h"
 
 #include <string>
+#include <algorithm>
 #include <string.h>
 
 #include <thrift/protocol/TDebugProtocol.h>
@@ -274,12 +275,14 @@ bool ColumnReader::ReadNewPage() {
 
 bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
   if (max_repetition_level_ > 0) {
-    if (1 != repetition_level_decoder_->GetInt32(rep_level, 1)) ParquetException::EofException();
+    if (1 != repetition_level_decoder_->GetInt32(rep_level, 1))
+      ParquetException::EofException();
   } else {
     *rep_level = 0;
   }
   if (max_definition_level_ > 0) {
-    if (1 != definition_level_decoder_->GetInt32(def_level, 1)) ParquetException::EofException();
+    if (1 != definition_level_decoder_->GetInt32(def_level, 1))
+      ParquetException::EofException();
   } else {
     *def_level = 0;
   }
@@ -287,7 +290,9 @@ bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level
   return *def_level < max_definition_level_;
 }
 
-int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, const string& path) {
+int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, 
+  const string& path)
+{
   const SchemaElement&  parent = schema[fid];
   string& fullpath = _element_paths[fid];
   if (fid != ROOT_NODE) {
@@ -300,9 +305,7 @@ int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, const str
       fullpath.append(".");
     }
     fullpath.append(parent.name);
-    //ppath = path[:]
-    //ppath.append(parent.name)
-    //self._element_path[fid] = ppath
+    _path_to_id[fullpath] = fid;
   }
   _max_repetition_levels[fid] = rep_level;
   _max_definition_levels[fid] = def_level;
@@ -315,51 +318,117 @@ int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, const str
     num_children -= 1;
     _child_to_parent[chd] = fid;
     _parent_to_child[fid].push_back(chd);
-    chd += _rebuild_tree(chd, rep_level, def_level, fullpath
-             //   self._element_path[fid]
-           );
+    chd += _rebuild_tree(chd, rep_level, def_level, fullpath);
   }
   return chd - fid;
 }
 
-
-void SchemaHelper::BuildFSM(std::vector<std::string>& fields, SchemaFSM& fsm) {
-
-}
-
-int SchemaHelper::_build_child_fsm(int fid, vector<vector<SchemaFSM::edge_t> >& edges){
+int SchemaHelper::_build_child_fsm(int fid){
   const vector<int>& child_ids = _parent_to_child[fid];
   for (int i=0; i<child_ids.size(); ++i) {
     int cid = child_ids[i];
     SchemaElement& element = schema[cid];
     int rep_level = _max_repetition_levels[cid];
-    vector<SchemaFSM::edge_t>& subedges = edges[cid];
+
+    vector<edge_t>& subedges = _edges[cid];
     subedges.resize(rep_level+1);
-    for (int r = 0; r < rep_level; ++r) {
+    for (int r = 0; r <= rep_level; ++r) {
       if ( i + 1 == child_ids.size() ) {
         subedges[r].next = fid;
-        subedges[r].type = ( fid == ROOT_NODE)? STAY:FOLLOW;
+        subedges[r].type = (fid == ROOT_NODE)? STAY : FOLLOW;
       } else {
         subedges[r].next = child_ids[i+1];
         subedges[r].type = STAY;
       }
     }
     if (element.repetition_type == FieldRepetitionType::REPEATED)
-      subedges[rep_level] = SchemaFSM::edge_t(cid, STAY);
-    if (element.__isset.num_children && element.num_children > 0) {
-      _build_child_fsm(cid, edges);
-    }
+      subedges[rep_level] = edge_t(cid, STAY);
+    if (element.__isset.num_children)
+      _build_child_fsm(cid);
   }
   return 0;
 }
 
-void SchemaHelper::BuildFullFSM(SchemaFSM& fsm) {
-  vector<vector<SchemaFSM::edge_t> > edges;
-  edges.resize(schema.size());
-  _build_child_fsm(ROOT_NODE, edges);
-  fsm.init(edges);
+void SchemaHelper::BuildFullFSM() {
+  if (_edges.size() != schema.size()) {
+    _edges.resize(schema.size());
+    _build_child_fsm(ROOT_NODE);
+  }
 }
 
+void SchemaHelper::BuildFSM(const vector<string>& fields, SchemaFSM& fsm) {
+  BuildFullFSM();
+  vector<int> fids;
+  if (fields.size() == 0) {
+    for (int i=0; i < schema.size(); ++i) {
+      SchemaElement& element = schema[i];
+      if (!element.__isset.num_children)
+        fids.push_back(i);
+    }
+  } else {
+    for(int i=0; i<fields.size(); ++i) {
+      map<string, int>::const_iterator itr = 
+          _path_to_id.find(fields[i]);
+      if (itr != _path_to_id.end())
+        fids.push_back(itr->second);
+    }
+    sort(fids.begin(), fids.end());
+  }
+  vector<vector<int> > all_edges(schema.size());
+  for (int i = 0; i < fids.size(); ++i) {
+    int id = fids[i];
+    int rep_lvl = GetMaxRepetitionLevel(id);
+    vector<int>& edge = all_edges[id];
+    edge.resize(1 + rep_lvl);
+    for( int r = 0; r <= rep_lvl; ++r) {
+      int tsid = _compress_state(id, r, fids);
+      edge[r] = tsid;
+    }
+  }
+  all_edges[ROOT_NODE].push_back(fids[0]);
+  fsm.init(all_edges);
+}
 
+int SchemaHelper::_follow_fsm(int field_id, int rep_lvl) {
+  vector<edge_t>& edge = _edges[field_id];
+  edge_t ts = edge[rep_lvl];
+  int ts_id = ts.next;
+  if (ts_id == ROOT_NODE) return ts_id;
+  if (ts.type == FOLLOW)
+    return _follow_fsm(ts_id, rep_lvl);
+  else {
+    SchemaElement& element = schema[ts_id];
+    while (schema[ts_id].__isset.num_children) {
+      ts_id = ts_id + 1;
+    }
+    return ts_id;
+  }
+}
+
+int SchemaHelper::_compress_state(int fid, int rep_lvl, 
+  const vector<int>& fields)
+{
+  if (!binary_search(fields.begin(), fields.end(), fid))
+    return ROOT_NODE;
+  int tsid = _follow_fsm(fid, rep_lvl);
+  while ((tsid != ROOT_NODE) && (!binary_search(fields.begin(), fields.end(), tsid))) {
+    fid = tsid;
+    tsid = _follow_fsm(fid, rep_lvl);
+  }
+  return tsid;
+}
+
+void SchemaFSM::dump(ostream& oss) const {
+  for (int i=0; i<states_.size(); ++i) {
+    const vector<int>& substates = states_[i];
+    if (substates.size() == 0)
+      continue;
+    oss << i << " : {" ;
+    for (int j=0; j < substates.size(); ++j) {
+      oss << " " << j << ":" << substates[j];
+    }
+    oss << "}\n";
+  }
+}
 }
 
