@@ -16,6 +16,7 @@
 #include "encodings/encodings.h"
 #include "compression/codec.h"
 #include "impala/bit-util.h"
+#include "read_support.h"
 
 #include <string>
 #include <algorithm>
@@ -290,6 +291,25 @@ bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level
   return *def_level < max_definition_level_;
 }
 
+int ColumnReader::skipValue(int values) {
+  return current_decoder_->skip(values);
+}
+
+int ColumnReader::skipCurrentRecord() {
+  int def_lvl = 1, rep_lvl;
+  int values = 0;
+  bool ret = false;
+  do {
+    ret = ReadDefinitionRepetitionLevels(&def_lvl, &rep_lvl);
+    if (def_lvl != 0 && ret)
+      values ++;
+  } while (def_lvl > 0 && ret);
+  if (values > 0) {
+    skipValue(values);
+  }
+  return values;
+}
+
 int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, 
   const string& path)
 {
@@ -430,5 +450,138 @@ void SchemaFSM::dump(ostream& oss) const {
     oss << "}\n";
   }
 }
+
+int RecordAssembler::assemble() {
+  int fid = fsm_.GetEntryState();
+  ColumnConverter* rd = fac_.GetConverter(fid);
+
+  if ( !rd->HasNext() )
+    return 0;
+
+  while ( fid != ROOT_NODE ) {
+    int def_lvl = rd->nextDefinitionLevel();
+    rd->consume();
+    int rep_lvl = rd->nextRepetitionLevel();
+    fid = fsm_.GetNextState(fid, rep_lvl);
+    if ( fid != ROOT_NODE ) {
+      rd = fac_.GetConverter(fid);
+    }
+  }
+  return 1;
+}
+
+ColumnConverter::ColumnConverter(SchemaHelper& helper, 
+  int fid, InputStream*) 
+{
+  SchemaElement& element = helper.schema[fid];
+  int max_def_lvl = helper.GetMaxDefinitionLevel(fid);
+  int max_rep_lvl = helper.GetMaxRepetitionLevel(fid);
+  //reader_.reset(new ColumnReader(input, max_def_lvl, max_rep_lvl));
+}
+
+ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string& col_path):
+  file_path_(file_path), row_group_idx_(0), col_path_(col_path)
+{
+  if (!GetFileMetadata(file_path_, &metadata_))
+    throw ParquetException("unable to open file");
+  helper_.reset(new SchemaHelper(metadata_.schema));
+  col_idx_ = helper_->GetElementId(col_path);
+  if (col_idx_ < 0)
+    throw ParquetException("invalid column");
+
+  max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
+  max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
+}
+
+ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, int col_idx):
+  file_path_(file_path), row_group_idx_(0)
+{
+  if (!GetFileMetadata(file_path_, &metadata_))
+    throw ParquetException("unable to open file");
+  if (col_idx >= metadata_.schema.size())
+    throw ParquetException("invalid column");
+
+  helper_.reset(new SchemaHelper(metadata_.schema));
+  col_idx_ = col_idx;
+  max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
+  max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
+  col_path_ = helper_->GetElementPath(col_idx);
+}
+
+string build_path_name(const vector<string>& path_in_schema) {
+  stringstream ss;
+  for (int i=0; i<path_in_schema.size(); ++i) {
+    if (i>0)
+      ss << ".";
+    ss << path_in_schema[i];
+  }
+  return ss.str();
+}
+
+bool ColumnChunkGenerator::next(ColumnMetaData* pmetadata, shared_ptr<ColumnReader>& reader) 
+{
+  if (row_group_idx_ >= metadata_.row_groups.size())
+    return false;
+  const RowGroup& row_group = metadata_.row_groups[row_group_idx_];
+  for (int col_idx = 0; col_idx < row_group.columns.size(); ++col_idx) {
+    const ColumnChunk& col = row_group.columns[col_idx];
+    string row_grp_pathname = build_path_name(col.meta_data.path_in_schema);
+    if (col_path_.compare(row_grp_pathname) != 0) {
+      continue;
+    }
+    string file_path = file_path_;
+    if (col.file_path.length() > 0)
+      file_path = col.file_path;
+    size_t col_start = col.meta_data.data_page_offset;
+    if (col.meta_data.__isset.dictionary_page_offset) {
+      if (col_start > col.meta_data.dictionary_page_offset) {
+        col_start = col.meta_data.dictionary_page_offset;
+      }
+    }
+    size_t read_offset = col_start;
+    size_t total_size = col.meta_data.total_compressed_size;
+
+    scoped_ptr<InputStream> input(new MmapMemoryInputStream(file_path, col_start, total_size));
+
+    //total_compressed_size might be incorrect, need to scan through the page headers
+    //to find out the correct size
+    int total_values = 0;
+    total_size = 0;
+    int num_read = 0;
+    const uint8_t* buf = input->Peek(1, &num_read);
+    while (total_values < col.meta_data.num_values) {
+      int num_read = 0;
+      parquet::PageHeader page_header;
+      uint32_t header_size = col.meta_data.total_compressed_size - 
+                             (buf - input->Peek(1, &num_read));
+      DeserializeThriftMsg(buf, &header_size, &page_header);
+      total_size += header_size + page_header.compressed_page_size;
+      buf += header_size + page_header.compressed_page_size;
+
+      if (page_header.type == PageType::DATA_PAGE) {
+        total_values += page_header.data_page_header.num_values;
+      } else if (page_header.type == PageType::DATA_PAGE_V2) {
+        total_values += page_header.data_page_header_v2.num_values;
+      }
+    }
+
+    if (total_size > col.meta_data.total_compressed_size) {
+      input_.reset(new MmapMemoryInputStream(file_path, read_offset, total_size));
+    } else {
+      input_.swap(input);
+    }
+
+    *pmetadata = col.meta_data;
+   
+    col_chunk_ = col; 
+    reader.reset(new ColumnReader(&(col_chunk_.meta_data), &metadata_.schema[col_idx_],
+      input_.get(), max_repetition_level_, max_definition_level_));
+    ++ row_group_idx_;
+    return true;
+  }
+  ++ row_group_idx_;
+  return false;
+}
+
 }
 

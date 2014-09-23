@@ -121,9 +121,13 @@ public:
     states_.swap(states);
   }
 
+  int GetEntryState() {
+    return states_[ROOT_NODE][0];
+  }
   int GetNextState(int state, int rep_level) {
     return states_[state][rep_level];
   }
+
   void dump(std::ostream& oss) const;
 private:
   std::vector<std::vector<int> > states_;
@@ -150,6 +154,13 @@ public:
 
   const std::string& GetElementPath(int col_idx) const {
     return _element_paths[col_idx];
+  }
+
+  int GetElementId(const std::string& path) const {
+    std::map<std::string, int>::const_iterator i = _path_to_id.find(path);
+    if (i == _path_to_id.end())
+      return -1;
+    return i->second;
   }
 
   void BuildFullFSM();
@@ -204,6 +215,11 @@ class ColumnReader {
   double GetDouble(int* definition_level, int* repetition_level);
   ByteArray GetByteArray(int* definition_level, int* repetition_level);
 
+  // skip values
+  int skipValue(int count);
+  // skip to defnition level of zero
+  int skipCurrentRecord();
+
  private:
   bool ReadNewPage();
   // Reads the next definition and repetition level. Returns true if the value is NULL.
@@ -240,6 +256,82 @@ class ColumnReader {
   std::vector<uint8_t> values_buffer_;
   int num_decoded_values_;
   int buffered_values_offset_;
+};
+
+//utitlity class to go through parquet file scan specific column
+class ColumnChunkGenerator {
+public:
+  ColumnChunkGenerator(const std::string& file_path, const std::string& col_path);
+  ColumnChunkGenerator(const std::string& file_path, int col_idx);
+  int GetMaxDefinitionLevel() const {
+    return max_definition_level_;
+  }
+
+  int GetMaxRepetitionLevel() const {
+    return max_repetition_level_;
+  }
+
+  const std::string& GetColumnPath() const {
+    return col_path_;
+  }
+
+  bool next(parquet::ColumnMetaData*, boost::shared_ptr<ColumnReader>&);
+private:
+  std::string file_path_;
+  parquet::FileMetaData metadata_;
+  int row_group_idx_;
+
+  std::string col_path_;
+  int col_idx_;
+  parquet::ColumnChunk col_chunk_;
+  int max_definition_level_;
+  int max_repetition_level_;
+  boost::scoped_ptr<SchemaHelper> helper_;
+  boost::scoped_ptr<InputStream> input_;
+};
+
+class ColumnConverter {
+public:
+  ColumnConverter(SchemaHelper& helper, int fid, InputStream*);
+  virtual ~ColumnConverter () {}
+  virtual void consume() = 0;
+
+  bool HasNext() {
+    return reader_->HasNext();
+  }
+
+  int  nextDefinitionLevel() const {
+    return def_lvl_;
+  }
+
+  int  nextRepetitionLevel() const {
+    return rep_lvl_;
+  }
+
+protected:
+  boost::scoped_ptr<ColumnReader> reader_;
+  int def_lvl_;
+  int rep_lvl_;
+};
+
+class ColumnConverterFactory {
+public:
+  virtual ColumnConverter* GetConverter(int fid) = 0;
+};
+
+class RecordAssembler {
+public:
+  RecordAssembler(SchemaHelper helper, ColumnConverterFactory& fac):
+    helper_(helper), fac_(fac) {
+  }
+
+  int selectOutputColumns(const std::vector<std::string>& columns);
+  int assemble();
+
+private:
+  SchemaHelper& helper_;
+  ColumnConverterFactory& fac_;
+  SchemaFSM fsm_;
 };
 
 inline bool ColumnReader::HasNext() {
