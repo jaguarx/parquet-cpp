@@ -310,6 +310,14 @@ int ColumnReader::skipCurrentRecord() {
   return values;
 }
 
+SchemaHelper::SchemaHelper(const string& file_path) {
+  parquet::FileMetaData metadata;
+  if (!GetFileMetadata(file_path, &metadata))
+    throw ParquetException("unable to open file");
+  schema = metadata.schema;
+  init_();
+}
+
 int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, 
   const string& path)
 {
@@ -455,28 +463,19 @@ int RecordAssembler::assemble() {
   int fid = fsm_.GetEntryState();
   ColumnConverter* rd = fac_.GetConverter(fid);
 
-  if ( !rd->HasNext() )
-    return 0;
-
   while ( fid != ROOT_NODE ) {
     int def_lvl = rd->nextDefinitionLevel();
     rd->consume();
+    rd->next();
     int rep_lvl = rd->nextRepetitionLevel();
     fid = fsm_.GetNextState(fid, rep_lvl);
     if ( fid != ROOT_NODE ) {
       rd = fac_.GetConverter(fid);
     }
   }
-  return 1;
-}
-
-ColumnConverter::ColumnConverter(SchemaHelper& helper, 
-  int fid, InputStream*) 
-{
-  SchemaElement& element = helper.schema[fid];
-  int max_def_lvl = helper.GetMaxDefinitionLevel(fid);
-  int max_rep_lvl = helper.GetMaxRepetitionLevel(fid);
-  //reader_.reset(new ColumnReader(input, max_def_lvl, max_rep_lvl));
+  if (rd->HasNext())
+    return 1;
+  return 0;
 }
 
 ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string& col_path):

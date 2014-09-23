@@ -136,13 +136,9 @@ private:
 class SchemaHelper {
 public:
   SchemaHelper (std::vector<parquet::SchemaElement>& _schema):schema(_schema){
-    _max_definition_levels.resize(schema.size());
-    _max_repetition_levels.resize(schema.size());
-    _child_to_parent.resize(schema.size());
-    _parent_to_child.resize(schema.size());
-    _element_paths.resize(schema.size());
-    _rebuild_tree(ROOT_NODE, 0, 0, "");
+    init_();
   }
+  SchemaHelper(const std::string& file_path);
 
   int GetMaxDefinitionLevel(int col_idx) const {
     return _max_definition_levels[col_idx];
@@ -166,9 +162,17 @@ public:
   void BuildFullFSM();
   void BuildFSM(const std::vector<std::string>& fields, SchemaFSM& fsm);
 
-  std::vector<parquet::SchemaElement>& schema;
+  std::vector<parquet::SchemaElement> schema;
 
 private:
+  void init_() {
+    _max_definition_levels.resize(schema.size());
+    _max_repetition_levels.resize(schema.size());
+    _child_to_parent.resize(schema.size());
+    _parent_to_child.resize(schema.size());
+    _element_paths.resize(schema.size());
+    _rebuild_tree(ROOT_NODE, 0, 0, "");
+  }
   int _build_child_fsm(int fid);
   int _rebuild_tree(int fid, int rep_level, int def_level, const std::string& path);
   int _follow_fsm(int fid, int rep_lvl);
@@ -292,13 +296,9 @@ private:
 
 class ColumnConverter {
 public:
-  ColumnConverter(SchemaHelper& helper, int fid, InputStream*);
   virtual ~ColumnConverter () {}
+  virtual bool next() = 0;
   virtual void consume() = 0;
-
-  bool HasNext() {
-    return reader_->HasNext();
-  }
 
   int  nextDefinitionLevel() const {
     return def_lvl_;
@@ -308,8 +308,14 @@ public:
     return rep_lvl_;
   }
 
+  bool HasNext() const {
+    if (reader_ == NULL) return false;
+    return reader_->HasNext();
+  }
+
 protected:
-  boost::scoped_ptr<ColumnReader> reader_;
+  ColumnConverter() {}
+  boost::shared_ptr<ColumnReader> reader_;
   int def_lvl_;
   int rep_lvl_;
 };
@@ -321,11 +327,13 @@ public:
 
 class RecordAssembler {
 public:
-  RecordAssembler(SchemaHelper helper, ColumnConverterFactory& fac):
+  RecordAssembler(SchemaHelper& helper, ColumnConverterFactory& fac):
     helper_(helper), fac_(fac) {
   }
 
-  int selectOutputColumns(const std::vector<std::string>& columns);
+  void selectOutputColumns(const std::vector<std::string>& columns) {
+    helper_.BuildFSM(columns, fsm_);
+  }
   int assemble();
 
 private:
