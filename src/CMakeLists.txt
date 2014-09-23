@@ -13,7 +13,7 @@
 # limitations under the License.
 
 add_library(Parquet STATIC
-  parquet.cc
+  parquet.cc read_support.cc
 )
 
 add_subdirectory(compression)
