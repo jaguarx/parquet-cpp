@@ -60,6 +60,7 @@ class Decoder {
   virtual int GetByteArray(ByteArray* buffer, int max_values) {
     throw ParquetException("Decoder does not implement this type.");
   }
+  virtual int skip(int count) = 0;
 
   // Returns the number of values left (for the last call to SetData()). This is
   // the number of values left in this page.

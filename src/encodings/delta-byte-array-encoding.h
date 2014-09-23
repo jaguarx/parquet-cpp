@@ -44,6 +44,15 @@ class DeltaByteArrayDecoder : public Decoder {
     return len_;
   }
 
+  virtual int skip(int values) {
+    values = std::min(values, num_values_);
+    int prefix_lens[values];
+    prefix_len_decoder_.GetInt32(prefix_lens, values);
+    suffix_decoder_.skip(values);
+    num_values_ -= values;
+    return values;
+  }
+
   // TODO: this doesn't work and requires memory management. We need to allocate
   // new strings to store the results.
   virtual int GetByteArray(ByteArray* buffer, int max_values) {

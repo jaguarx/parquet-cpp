@@ -35,6 +35,27 @@ class PlainDecoder : public Decoder {
     return len_;
   }
 
+  virtual int skip(int values) {
+    int byte_size = 0;
+    switch (type_) {
+    case parquet::Type::BOOLEAN: byte_size = 1; break;
+    case parquet::Type::INT32:  byte_size = 4; break;
+    case parquet::Type::INT64:  byte_size = 8; break;
+    case parquet::Type::FLOAT:  byte_size = 4; break;
+    case parquet::Type::DOUBLE: byte_size = 8; break;
+    default: ParquetException::NYI("unable to determine byte size");
+    }
+    int num_not_null_values = len_ / byte_size;
+    int num_aval_values = std::min(num_not_null_values, num_values_);
+    values = std::min(values, num_aval_values);
+    int size = values * byte_size;
+    if (len_ < size)  ParquetException::EofException();
+    data_ += size;
+    len_ -= size;
+    num_values_ -= values;
+    return values;
+  }
+
   int GetValues(void* buffer, int max_values, int byte_size) {
     int num_not_null_values = len_ / byte_size;
     int num_aval_values = std::min(num_not_null_values, num_values_);

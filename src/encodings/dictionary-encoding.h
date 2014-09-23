@@ -82,6 +82,18 @@ class DictionaryDecoder : public Decoder {
     idx_decoder_ = impala::RleDecoder(data, len, bit_width);
   }
 
+  virtual int skip(int values) {
+    values = std::min(values, num_values_);
+    int i = 0;
+    int buf;
+    for (; i < values; ++i) {
+      if (!idx_decoder_.Get(&buf)) 
+        ParquetException::EofException();
+      --num_values_;
+    }
+    return i;
+  }
+
   virtual int GetInt32(int32_t* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     for (int i = 0; i < max_values; ++i) {

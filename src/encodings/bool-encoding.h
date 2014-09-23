@@ -28,9 +28,21 @@ class BoolDecoder : public Decoder {
     decoder_ = impala::RleDecoder(data, len, 1);
     len_ = len;
   }
+
   virtual int GetSize(){
      return len_;
   }
+
+  virtual int skip(int values) {
+    values = std::min(values, num_values_);
+    bool buf;
+    for (int i = 0; i < values; ++i) {
+      if (!decoder_.Get(&buf)) ParquetException::EofException();
+    }
+    num_values_ -= values;
+    return values;
+  }
+
   virtual int GetBool(bool* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     for (int i = 0; i < max_values; ++i) {

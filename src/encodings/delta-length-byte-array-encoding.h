@@ -39,6 +39,18 @@ class DeltaLengthByteArrayDecoder : public Decoder {
     return len_;
   }
 
+  virtual int skip(int values) {
+    values = std::min(values, num_values_);
+    int lengths[values];
+    len_decoder_.GetInt32(lengths, values);
+    for (int  i = 0; i < values; ++i) {
+      data_ += lengths[i];
+      len_ -= lengths[i];
+    }
+    num_values_ -= values;
+    return values;
+  }
+
   virtual int GetByteArray(ByteArray* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     int lengths[max_values];

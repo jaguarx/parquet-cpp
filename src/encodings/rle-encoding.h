@@ -42,6 +42,17 @@ class RleDecoder : public Decoder {
     return len_;
   }
 
+  virtual int skip(int values) {
+    int buf;
+    int i = 0;
+    for(int i = 0; i < values; ++i) {
+      if ( 1 != GetInt32(&buf, 1) ) {
+        return i;
+      }
+    }
+    return i;
+  }
+
   virtual int GetInt32(int32_t* buffer, int max_values) {
     for ( int i=0; i < max_values; ++i) {
       if (!decoder_->Get(buffer+i))

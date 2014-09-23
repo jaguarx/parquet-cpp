@@ -68,6 +68,34 @@ class DeltaBitPackDecoder : public Decoder {
     return len_;
   }
 
+  virtual int skip(int values) {
+    values = std::min(values, num_values_);
+    int i = 0;
+    if (is_first_value_ && values > 0) {
+      is_first_value_ = false;
+      ++i;
+    }
+    for (; i < values; ++i) {
+      if (UNLIKELY(values_current_mini_block_ == 0)) {
+        ++mini_block_idx_;
+        if (mini_block_idx_ < delta_bit_widths_.size()) {
+          delta_bit_width_ = delta_bit_widths_[mini_block_idx_];
+          values_current_mini_block_ = values_per_mini_block_;
+          decodeMiniBlock();
+        } else {
+          InitBlock();
+          decodeMiniBlock();
+          --i;
+          continue;
+        }
+      }
+
+      --values_current_mini_block_;
+    }
+    num_values_ -= values;
+    return values;
+  }
+
   virtual int GetInt32(int32_t* buffer, int max_values) {
     return GetInternal(buffer, max_values);
   }
