@@ -299,6 +299,7 @@ public:
   virtual ~ColumnConverter () {}
   virtual bool next() = 0;
   virtual void consume() = 0;
+  virtual bool HasNext() = 0;
 
   int  nextDefinitionLevel() const {
     return def_lvl_;
@@ -306,11 +307,6 @@ public:
 
   int  nextRepetitionLevel() const {
     return rep_lvl_;
-  }
-
-  bool HasNext() const {
-    if (reader_ == NULL) return false;
-    return reader_->HasNext();
   }
 
 protected:

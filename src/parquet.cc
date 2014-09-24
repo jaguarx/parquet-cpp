@@ -462,7 +462,6 @@ void SchemaFSM::dump(ostream& oss) const {
 int RecordAssembler::assemble() {
   int fid = fsm_.GetEntryState();
   ColumnConverter* rd = fac_.GetConverter(fid);
-
   while ( fid != ROOT_NODE ) {
     int def_lvl = rd->nextDefinitionLevel();
     rd->consume();

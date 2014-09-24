@@ -42,20 +42,35 @@ public:
   DumpColumnConverter(const string& path, const string& col_path)
   : gen_(path, col_path), col_path_(col_path) {
     gen_.next(&col_meta_data, reader_);
+    value_read_ = 0;
   }
 
   ~DumpColumnConverter() {
   }
 
   bool next() {
-    if (!reader_->HasNext())
+    if (reader_->HasNext()) {
+      _next_value();
+      return true;
+    } else {
+      rep_lvl_ = def_lvl_ = 0;
+      value_read_ --;
+      if (value_read_ >= 0) {
+        return true;
+      }
       return false;
-    _next_value();
-    return true;
+    }
+  }
+
+  bool HasNext() {
+    return value_read_ > 0 || reader_->HasNext();
   }
 
   void consume() {
     cout<< col_path_ << " : ";
+    if (def_lvl_ < gen_.GetMaxDefinitionLevel())
+      cout << "NULL";
+    else {
     switch (col_meta_data.type) {
     case Type::BOOLEAN: cout << value_.bool_val; break;
     case Type::INT32: cout << value_.int32_val; break;
@@ -63,8 +78,11 @@ public:
     case Type::FLOAT: cout << value_.float_val; break;
     case Type::DOUBLE: cout << value_.double_val; break;
     case Type::BYTE_ARRAY: cout << ByteArrayToString(value_.byte_array_val); break;
+    default: break;
+    }
     }
     cout << "\n";
+    value_read_ --;
   }
 
 private:
@@ -77,12 +95,14 @@ private:
     case Type::DOUBLE: value_.double_val = reader_->GetDouble(&def_lvl_, &rep_lvl_); break;
     case Type::BYTE_ARRAY: value_.byte_array_val = reader_->GetByteArray(&def_lvl_, &rep_lvl_); break;
     }
+    value_read_ ++;
   }
 protected:
   ColumnChunkGenerator gen_;
   parquet::ColumnMetaData col_meta_data;
   string col_path_;
   AnyType value_;
+  int value_read_;
 };
 
 class DumpColumnConverterFactory : public ColumnConverterFactory {
