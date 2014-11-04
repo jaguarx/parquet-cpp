@@ -110,12 +110,26 @@ public:
   DumpColumnConverterFactory(SchemaHelper& helper, const string& file_path)
   : helper_(helper), file_path_(file_path) {
     converters_.resize(helper.schema.size());
+    record_count_ = 0;
   }
 
   ~DumpColumnConverterFactory() {
     for ( int i = 0 ; i < converters_.size(); ++i ) {
       delete converters_[i];
     }
+  }
+
+  int applyFilter() {
+    if (0 == (record_count_ & 1)) {
+      for(int i=0; i<helper_.schema.size(); ++i) {
+        cerr << " field : " << i << "\n";
+        ColumnConverter* cnv = GetConverter(i);
+        if (cnv) {
+          cnv->skipRecord();
+        }
+      }
+    }
+    return 0;
   }
 
   virtual ColumnConverter* GetConverter(int fid) {
@@ -131,6 +145,7 @@ private:
   SchemaHelper& helper_;
   string file_path_;
   vector<ColumnConverter*> converters_;
+  int record_count_;
 };
 
 // Simple example which reads all the values in the file and outputs the number of

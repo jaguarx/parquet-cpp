@@ -297,8 +297,13 @@ private:
 class ColumnConverter {
 public:
   virtual ~ColumnConverter () {}
+
+  //return value:
+  //  -1  stip all
+  //  0   skip the rest of record
   virtual bool next() = 0;
-  virtual void consume() = 0;
+
+  virtual void consume() = 0; 
   virtual bool HasNext() = 0;
 
   int  nextDefinitionLevel() const {
@@ -307,6 +312,10 @@ public:
 
   int  nextRepetitionLevel() const {
     return rep_lvl_;
+  }
+
+  int skipRecord() {
+    return reader_->skipCurrentRecord();
   }
 
 protected:
@@ -318,6 +327,9 @@ protected:
 
 class ColumnConverterFactory {
 public:
+  // apply record level filter to determine if current record 
+  // should be skipped
+  virtual int applyFilter() = 0;
   virtual ColumnConverter* GetConverter(int fid) = 0;
 };
 
@@ -330,8 +342,9 @@ public:
   void selectOutputColumns(const std::vector<std::string>& columns) {
     helper_.BuildFSM(columns, fsm_);
   }
-  int assemble();
 
+  int assemble();
+  
 private:
   SchemaHelper& helper_;
   ColumnConverterFactory& fac_;

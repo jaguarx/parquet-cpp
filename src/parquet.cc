@@ -460,6 +460,9 @@ void SchemaFSM::dump(ostream& oss) const {
 }
 
 int RecordAssembler::assemble() {
+  int r = fac_.applyFilter();
+  if (r)
+    return r;
   int fid = fsm_.GetEntryState();
   ColumnConverter* rd = fac_.GetConverter(fid);
   while ( fid != ROOT_NODE ) {
