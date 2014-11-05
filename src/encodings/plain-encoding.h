@@ -43,6 +43,7 @@ class PlainDecoder : public Decoder {
     case parquet::Type::INT64:  byte_size = 8; break;
     case parquet::Type::FLOAT:  byte_size = 4; break;
     case parquet::Type::DOUBLE: byte_size = 8; break;
+    case parquet::Type::BYTE_ARRAY: return _skip_byte_array(values); break;
     default: ParquetException::NYI("unable to determine byte size");
     }
     int num_not_null_values = len_ / byte_size;
@@ -101,6 +102,19 @@ class PlainDecoder : public Decoder {
   }
 
  private:
+  int _skip_byte_array(int max_values) {
+    max_values = std::min(max_values, num_values_);
+    int values = 0;
+    for (int i = 0; i < max_values && len_ > 0; ++i) {
+      uint32_t val_len = *reinterpret_cast<const uint32_t*>(data_);
+      if (len_ < sizeof(uint32_t) + val_len) ParquetException::EofException();
+      data_ += sizeof(uint32_t) + val_len;
+      len_ -= sizeof(uint32_t) + val_len;
+      values ++;
+    }
+    num_values_ -= values;
+    return max_values;
+  }
   const uint8_t* data_;
   int len_;
 };

@@ -63,7 +63,9 @@ ColumnReader::ColumnReader(const ColumnMetaData* metadata,
     current_decoder_(NULL),
     num_buffered_values_(0),
     num_decoded_values_(0),
-    buffered_values_offset_(0) {
+    buffered_values_offset_(0),
+    saved_def_level_(-1),
+    saved_rep_level_(-1) {
   int value_byte_size;
   switch (metadata->type) {
     case parquet::Type::BOOLEAN:
@@ -275,39 +277,74 @@ bool ColumnReader::ReadNewPage() {
 }
 
 bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
-  if (max_repetition_level_ > 0) {
-    if (1 != repetition_level_decoder_->GetInt32(rep_level, 1))
-      ParquetException::EofException();
-  } else {
-    *rep_level = 0;
-  }
-  if (max_definition_level_ > 0) {
-    if (1 != definition_level_decoder_->GetInt32(def_level, 1))
-      ParquetException::EofException();
-  } else {
-    *def_level = 0;
-  }
+  *def_level = nextDefinitionLevel();
+  *rep_level = nextRepetitionLevel();
   --num_buffered_values_;
   return *def_level < max_definition_level_;
 }
 
+bool ColumnReader::peekDefinitionRepetitionLevels(int* def_level, int* rep_level) {
+  *def_level = nextDefinitionLevel();
+  *rep_level = nextRepetitionLevel();
+  return true;
+}
+
+int ColumnReader::nextDefinitionLevel() {
+  if (max_definition_level_ > 0) {
+    if (1 != definition_level_decoder_->GetInt32(&saved_def_level_, 1)) {
+      return 0;
+    }
+    return saved_def_level_;
+  }
+  return 0;
+}
+
+int ColumnReader::nextRepetitionLevel() {
+  if (max_repetition_level_ > 0) {
+    if (1 != repetition_level_decoder_->GetInt32(&saved_rep_level_, 1)) {
+      return 0;
+    }
+    return saved_rep_level_;
+  }
+  return 0;
+}
+
 int ColumnReader::skipValue(int values) {
-  return current_decoder_->skip(values);
+  int buf_bump = std::min(values, 
+          num_decoded_values_ - buffered_values_offset_);
+  buffered_values_offset_ += buf_bump;
+
+  if (values > buf_bump) {
+    return current_decoder_->skip(values - buf_bump);
+  }
+  return values;
 }
 
 int ColumnReader::skipCurrentRecord() {
-  int def_lvl = 1, rep_lvl;
+  if (!HasNext())
+    return 0;
+
+  int def_lvl = 0, rep_lvl = 0;
   int values = 0;
-  bool ret = false;
+  //ReadDefinitionRepetitionLevels(&def_lvl, &rep_lvl);
+  def_lvl = nextDefinitionLevel();
+  rep_lvl = nextRepetitionLevel();
+  --num_buffered_values_;
+  if (def_lvl == max_definition_level_) values ++;
+
   do {
-    ret = ReadDefinitionRepetitionLevels(&def_lvl, &rep_lvl);
-    if (def_lvl != 0 && ret)
-      values ++;
-  } while (def_lvl > 0 && ret);
+    rep_lvl = nextRepetitionLevel();
+    if (rep_lvl > 0) {
+      def_lvl = nextDefinitionLevel();
+      --num_buffered_values_;
+      if(def_lvl == max_definition_level_)
+        values ++;
+    }
+  } while (rep_lvl > 0);
   if (values > 0) {
     skipValue(values);
   }
-  return values;
+  return (HasNext())? 1: 0;
 }
 
 SchemaHelper::SchemaHelper(const string& file_path) {
@@ -463,13 +500,21 @@ int RecordAssembler::assemble() {
   int r = fac_.applyFilter();
   if (r)
     return r;
+
   int fid = fsm_.GetEntryState();
   ColumnConverter* rd = fac_.GetConverter(fid);
+  if (!rd->HasNext())
+    return 0;
+
   while ( fid != ROOT_NODE ) {
-    int def_lvl = rd->nextDefinitionLevel();
-    rd->consume();
-    rd->next();
-    int rep_lvl = rd->nextRepetitionLevel();
+    int def_lvl = rd->reader_->nextDefinitionLevel();
+    int rep_lvl = rd->reader_->nextRepetitionLevel();
+    //cerr << "assemble: " << fid << ", def: " << def_lvl <<"\n";
+    rd->consume(def_lvl);
+    //rd->next();
+    if (rep_lvl == 0)
+      rep_lvl = rd->reader_->nextRepetitionLevel();
+    //cerr << "assemble: " << fid << ", next_rep_lvl: " << rep_lvl << "\n";
     fid = fsm_.GetNextState(fid, rep_lvl);
     if ( fid != ROOT_NODE ) {
       rd = fac_.GetConverter(fid);

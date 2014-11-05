@@ -224,10 +224,30 @@ class ColumnReader {
   // skip to defnition level of zero
   int skipCurrentRecord();
 
+  bool boolValue();
+  int32_t int32Value();
+  int64_t int64Value();
+  float floatValue();
+  double doubleValue();
+  ByteArray byteArrayValue();
+
+  int nextDefinitionLevel();
+  int nextRepetitionLevel();
+  int nextValue() {
+    if (buffered_values_offset_ == num_decoded_values_)
+      BatchDecode();
+    else
+      buffered_values_offset_++;
+    return buffered_values_offset_;
+  }
+
  private:
   bool ReadNewPage();
   // Reads the next definition and repetition level. Returns true if the value is NULL.
   bool ReadDefinitionRepetitionLevels(int* def_level, int* rep_level);
+
+  // retur true if value exists
+  bool peekDefinitionRepetitionLevels(int* def_level, int* rep_level);
 
   void BatchDecode();
 
@@ -260,6 +280,9 @@ class ColumnReader {
   std::vector<uint8_t> values_buffer_;
   int num_decoded_values_;
   int buffered_values_offset_;
+
+  int saved_def_level_;
+  int saved_rep_level_;
 };
 
 //utitlity class to go through parquet file scan specific column
@@ -303,16 +326,8 @@ public:
   //  0   skip the rest of record
   virtual bool next() = 0;
 
-  virtual void consume() = 0; 
+  virtual void consume(int def_lvl) = 0; 
   virtual bool HasNext() = 0;
-
-  int  nextDefinitionLevel() const {
-    return def_lvl_;
-  }
-
-  int  nextRepetitionLevel() const {
-    return rep_lvl_;
-  }
 
   int skipRecord() {
     return reader_->skipCurrentRecord();
@@ -320,9 +335,11 @@ public:
 
 protected:
   ColumnConverter() {}
+
+public:
   boost::shared_ptr<ColumnReader> reader_;
-  int def_lvl_;
-  int rep_lvl_;
+  //int def_lvl_;
+  //int rep_lvl_;
 };
 
 class ColumnConverterFactory {
@@ -393,6 +410,30 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
   if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
   if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
   return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
+}
+
+inline bool ColumnReader::boolValue() {
+  return reinterpret_cast<bool*>(&values_buffer_[0])[buffered_values_offset_];
+}
+
+inline int32_t ColumnReader::int32Value() {
+  return reinterpret_cast<int32_t*>(&values_buffer_[0])[buffered_values_offset_];
+}
+
+inline int64_t ColumnReader::int64Value() {
+  return reinterpret_cast<int64_t*>(&values_buffer_[0])[buffered_values_offset_];
+}
+
+inline float ColumnReader::floatValue() {
+  return reinterpret_cast<float*>(&values_buffer_[0])[buffered_values_offset_];
+}
+
+inline double ColumnReader::doubleValue() {
+  return reinterpret_cast<double*>(&values_buffer_[0])[buffered_values_offset_];
+}
+
+inline ByteArray ColumnReader::byteArrayValue() {
+  return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_];
 }
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain

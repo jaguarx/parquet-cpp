@@ -43,6 +43,8 @@ public:
   : gen_(path, col_path), col_path_(col_path) {
     gen_.next(&col_meta_data, reader_);
     value_read_ = 0;
+    def_lvl_ = rep_lvl_ = 0;
+    reader_->HasNext();
   }
 
   ~DumpColumnConverter() {
@@ -53,7 +55,6 @@ public:
       _next_value();
       return true;
     } else {
-      rep_lvl_ = def_lvl_ = 0;
       value_read_ --;
       if (value_read_ >= 0) {
         return true;
@@ -66,18 +67,19 @@ public:
     return value_read_ > 0 || reader_->HasNext();
   }
 
-  void consume() {
-    cout<< col_path_ << " : ";
-    if (def_lvl_ < gen_.GetMaxDefinitionLevel())
+  void consume(int def_lvl) {
+    cout<< " " << col_path_ << " : ";
+    if (def_lvl < gen_.GetMaxDefinitionLevel())
       cout << "NULL";
     else {
+    reader_->nextValue();
     switch (col_meta_data.type) {
-    case Type::BOOLEAN: cout << value_.bool_val; break;
-    case Type::INT32: cout << value_.int32_val; break;
-    case Type::INT64: cout << value_.int64_val; break;
-    case Type::FLOAT: cout << value_.float_val; break;
-    case Type::DOUBLE: cout << value_.double_val; break;
-    case Type::BYTE_ARRAY: cout << ByteArrayToString(value_.byte_array_val); break;
+    case Type::BOOLEAN: cout << reader_->boolValue(); break;
+    case Type::INT32: cout << reader_->int32Value(); break;
+    case Type::INT64: cout << reader_->int64Value(); break;
+    case Type::FLOAT: cout << reader_->floatValue(); break;
+    case Type::DOUBLE: cout << reader_->doubleValue(); break;
+    case Type::BYTE_ARRAY: cout << ByteArrayToString(reader_->byteArrayValue()); break;
     default: break;
     }
     }
@@ -87,21 +89,25 @@ public:
 
 private:
   void _next_value() {
+/*
     switch (col_meta_data.type) {
-    case Type::BOOLEAN: value_.bool_val = reader_->GetBool(&def_lvl_, &rep_lvl_); break;
-    case Type::INT32: value_.int32_val = reader_->GetInt32(&def_lvl_, &rep_lvl_); break;
-    case Type::INT64: value_.int64_val = reader_->GetInt64(&def_lvl_, &rep_lvl_); break;
-    case Type::FLOAT: value_.float_val = reader_->GetFloat(&def_lvl_, &rep_lvl_); break;
-    case Type::DOUBLE: value_.double_val = reader_->GetDouble(&def_lvl_, &rep_lvl_); break;
-    case Type::BYTE_ARRAY: value_.byte_array_val = reader_->GetByteArray(&def_lvl_, &rep_lvl_); break;
-    }
-    value_read_ ++;
+    case Type::BOOLEAN: reader_->GetBool(&def_lvl_, &rep_lvl_); break;
+    case Type::INT32: reader_->GetInt32(&def_lvl_, &rep_lvl_); break;
+    case Type::INT64: reader_->GetInt64(&def_lvl_, &rep_lvl_); break;
+    case Type::FLOAT: reader_->GetFloat(&def_lvl_, &rep_lvl_); break;
+    case Type::DOUBLE: reader_->GetDouble(&def_lvl_, &rep_lvl_); break;
+    case Type::BYTE_ARRAY: reader_->GetByteArray(&def_lvl_, &rep_lvl_); break;
+    }*/
+    //reader_->nextValue();
+    //value_read_ ++;
   }
 protected:
   ColumnChunkGenerator gen_;
   parquet::ColumnMetaData col_meta_data;
   string col_path_;
-  AnyType value_;
+  int def_lvl_;
+  int rep_lvl_;
+  //AnyType value_;
   int value_read_;
 };
 
@@ -120,23 +126,35 @@ public:
   }
 
   int applyFilter() {
+    cerr << "##### record " << record_count_ << " ####\n";
     if (0 == (record_count_ & 1)) {
+      int v = 0;
       for(int i=0; i<helper_.schema.size(); ++i) {
-        cerr << " field : " << i << "\n";
+        const SchemaElement& e = helper_.schema[i];
+        if (e.__isset.num_children)
+          continue;
         ColumnConverter* cnv = GetConverter(i);
         if (cnv) {
-          cnv->skipRecord();
+          int si = cnv->skipRecord();
+          if (cnv->reader_->HasNext())
+            v |= 1;
         }
       }
+      record_count_ ++;
+      return (v>0? 1:0);
     }
+    record_count_ ++;
     return 0;
   }
 
   virtual ColumnConverter* GetConverter(int fid) {
     if (converters_[fid] == NULL) {
-      string col = helper_.GetElementPath(fid);
+      const string& col = helper_.GetElementPath(fid);
+      if (col.size() <= 0)
+        return NULL;
+      //cerr << col << "\n";
       converters_[fid] = new DumpColumnConverter(file_path_, col);
-      converters_[fid]->next();
+      //converters_[fid]->next();
     }
     return converters_[fid];
   }
