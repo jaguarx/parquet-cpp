@@ -64,7 +64,6 @@ ColumnReader::ColumnReader(const ColumnMetaData* metadata,
     num_buffered_values_(0),
     num_decoded_values_(0),
     buffered_values_offset_(0),
-    saved_def_level_(-1),
     saved_rep_level_(-1) {
   int value_byte_size;
   switch (metadata->type) {
@@ -291,20 +290,34 @@ bool ColumnReader::peekDefinitionRepetitionLevels(int* def_level, int* rep_level
 
 int ColumnReader::nextDefinitionLevel() {
   if (max_definition_level_ > 0) {
-    if (1 != definition_level_decoder_->GetInt32(&saved_def_level_, 1)) {
+    int val = 0;
+    if (1 != definition_level_decoder_->GetInt32(&val, 1)) {
       return 0;
     }
-    return saved_def_level_;
+    return val;
   }
   return 0;
 }
 
+int ColumnReader::peekRepetitionLevel() {
+  if (saved_rep_level_ >= 0)
+    return saved_rep_level_;
+  saved_rep_level_ = nextRepetitionLevel();
+  return saved_rep_level_;
+}
+
 int ColumnReader::nextRepetitionLevel() {
+  if (saved_rep_level_ >= 0) {
+    int t = saved_rep_level_;
+    saved_rep_level_ = -1;
+    return t;
+  }
   if (max_repetition_level_ > 0) {
-    if (1 != repetition_level_decoder_->GetInt32(&saved_rep_level_, 1)) {
+	int rep_lvl = 0;
+    if (1 != repetition_level_decoder_->GetInt32(&rep_lvl, 1)) {
       return 0;
     }
-    return saved_rep_level_;
+    return rep_lvl;
   }
   return 0;
 }
@@ -318,6 +331,61 @@ int ColumnReader::skipValue(int values) {
     return current_decoder_->skip(values - buf_bump);
   }
   return values;
+}
+
+void ColumnReader::copyValues(vector<uint8_t>& buf, int max_values) {
+  int buf_bump = std::min(max_values,
+	    num_decoded_values_ - buffered_values_offset_);
+  max_values -= buf_bump;
+  uint8_t* pvalbuf = &values_buffer_[0];
+  num_buffered_values_ -= buf_bump;
+  switch (metadata_->type) {
+    case parquet::Type::BOOLEAN: {
+      buf.resize(max_values);
+      bool* pa = reinterpret_cast<bool*>(pvalbuf) + buffered_values_offset_;
+      buf.assign(pa, pa+buf_bump);
+      num_buffered_values_ -= current_decoder_->GetBool(
+    		  reinterpret_cast<bool*>(&buf[0])+buf_bump, max_values);
+    }; break;
+    case parquet::Type::INT32: {
+      buf.resize(max_values*sizeof(int32_t));
+      int32_t* pa = reinterpret_cast<int32_t*>(pvalbuf) + buffered_values_offset_;
+      buf.assign(pa, pa+buf_bump);
+      num_buffered_values_ -= current_decoder_->GetInt32(
+    		  reinterpret_cast<int32_t*>(&buf[0])+buf_bump, max_values);
+    }; break;
+    case parquet::Type::INT64: {
+        buf.resize(max_values*sizeof(int64_t));
+        int64_t* pa = reinterpret_cast<int64_t*>(pvalbuf) + buffered_values_offset_;
+        buf.assign(pa, pa+buf_bump);
+        num_buffered_values_ -= current_decoder_->GetInt64(
+        		reinterpret_cast<int64_t*>(&buf[0])+buf_bump, max_values);
+      }; break;
+    case parquet::Type::FLOAT:  {
+        buf.resize(max_values*sizeof(float));
+        float* pa = reinterpret_cast<float*>(pvalbuf) + buffered_values_offset_;
+        buf.assign(pa, pa+buf_bump);
+        num_buffered_values_ -= current_decoder_->GetFloat(
+        		reinterpret_cast<float*>(&buf[0])+buf_bump, max_values);
+      }; break;
+    case parquet::Type::DOUBLE: {
+        buf.resize(max_values*sizeof(double));
+        double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
+        buf.assign(pa, pa+buf_bump);
+        num_buffered_values_ -= current_decoder_->GetDouble(
+        		reinterpret_cast<double*>(&buf[0])+buf_bump, max_values);
+      }; break;
+    case parquet::Type::BYTE_ARRAY:{
+        buf.resize(max_values*sizeof(ByteArray));
+        double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
+        buf.assign(pa, pa+buf_bump);
+        num_buffered_values_ -= current_decoder_->GetByteArray(
+        		reinterpret_cast<ByteArray*>(&buf[0])+buf_bump, max_values);
+      }; break;
+    default:
+      ParquetException::NYI("Unsupported type.");
+  }
+
 }
 
 int ColumnReader::skipCurrentRecord() {
@@ -496,33 +564,79 @@ void SchemaFSM::dump(ostream& oss) const {
   }
 }
 
-int RecordAssembler::assemble() {
-  int r = fac_.applyFilter();
-  if (r)
-    return r;
+void ColumnValueChunk::scanRecordBoundary(){
+  rep_lvl_pos_ = 0;
+  def_lvl_pos_ = 0;
+  val_buf_pos_ = 0;
+  num_values_ = 0;
 
-  int fid = fsm_.GetEntryState();
-  ColumnConverter* rd = fac_.GetConverter(fid);
-  if (!rd->HasNext())
+  int rep_lvl = reader_.nextRepetitionLevel();
+  rep_lvls_.push_back(rep_lvl);
+  int def_lvl = reader_.nextDefinitionLevel();
+  def_lvls_.push_back(def_lvl);
+  if (def_lvl == reader_.MaxDefinitionLevel())
+    num_values_ ++;
+  do {
+    rep_lvl = reader_.peekRepetitionLevel();
+    if (rep_lvl > 0) {
+      rep_lvl = reader_.nextRepetitionLevel();
+  	  rep_lvls_.push_back(rep_lvl);
+      def_lvl = reader_.nextDefinitionLevel();
+      def_lvls_.push_back(def_lvl);
+      if (def_lvl == reader_.MaxDefinitionLevel()) {
+        num_values_ ++;
+      }
+    }
+  } while (rep_lvl > 0);
+  rep_lvls_.push_back(0); //add a terminating 0
+  reader_.copyValues(val_buff_, num_values_);
+  value_loaded_ = true;
+}
+
+int RecordAssembler::assemble() {
+  int entry_state = fsm_.GetEntryState();
+  ColumnValueChunk& ch = fac_.GetChunk(entry_state);
+  if (!ch.HasNext())
     return 0;
 
-  while ( fid != ROOT_NODE ) {
-    int def_lvl = rd->reader_->nextDefinitionLevel();
-    int rep_lvl = rd->reader_->nextRepetitionLevel();
-    //cerr << "assemble: " << fid << ", def: " << def_lvl <<"\n";
-    rd->consume(def_lvl);
-    //rd->next();
-    if (rep_lvl == 0)
-      rep_lvl = rd->reader_->nextRepetitionLevel();
-    //cerr << "assemble: " << fid << ", next_rep_lvl: " << rep_lvl << "\n";
-    fid = fsm_.GetNextState(fid, rep_lvl);
-    if ( fid != ROOT_NODE ) {
-      rd = fac_.GetConverter(fid);
+  // apply filers
+  bool skip_record = fac_.applyFilter();
+
+  int fid = entry_state;
+  while (fid != ROOT_NODE) {
+    ColumnValueChunk& ch = fac_.GetChunk(fid);
+    if (skip_record) {
+      if (ch.valueLoaded())
+        ch.clearBuffer();
+      else
+    	ch.scanRecordBoundary();
+    } else {
+      if (!ch.valueLoaded())
+        ch.scanRecordBoundary();
+      else
+    	ch.resetBufferPos();
+      ch.nextRepetitionLevel();
     }
+    fid = fsm_.GetNextState(fid, 0);
   }
-  if (rd->HasNext())
+  if (skip_record)
     return 1;
-  return 0;
+
+  fid = entry_state;
+  while ( fid != ROOT_NODE ) {
+    ColumnValueChunk& ch = fac_.GetChunk(fid);
+    fac_.consumeValueChunk(fid, ch);
+    int rep_lvl = ch.nextRepetitionLevel();
+    int nfid = fsm_.GetNextState(fid, rep_lvl);
+    fid = nfid;
+  }
+  fid = entry_state;
+  while (fid != ROOT_NODE) {
+    ColumnValueChunk& ch = fac_.GetChunk(fid);
+    ch.clearBuffer();
+    fid = fsm_.GetNextState(fid, 0);
+  }
+  return 1;
 }
 
 ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string& col_path):

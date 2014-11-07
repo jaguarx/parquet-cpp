@@ -1,20 +1,9 @@
-// Copyright 2012 Cloudera Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <parquet/parquet.h>
+#include <parquet/record_filter.h>
 #include <iostream>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "example_util.h"
 
@@ -22,166 +11,158 @@ using namespace parquet;
 using namespace parquet_cpp;
 using namespace std;
 
-struct AnyType {
-  union {
-    bool bool_val;
-    int32_t int32_val;
-    int64_t int64_val;
-    float float_val;
-    double double_val;
-    ByteArray byte_array_val;
-  };
-};
-
-static string ByteArrayToString(const ByteArray& a) {
-  return string(reinterpret_cast<const char*>(a.ptr), a.len);
+ostream& operator<<(ostream& oss, const ByteArray& a) {
+  oss.write((const char*)a.ptr, a.len);
+  return oss;
 }
 
-class DumpColumnConverter : public ColumnConverter {
+ostream& operator<<(ostream& oss, const Int96& v){
+  oss << hex << v.i[0];
+  oss << hex << v.i[1];
+  oss << hex << v.i[2];
+  return oss;
+}
+
+class DumpColumnValueChunk : public ColumnValueChunk {
 public:
-  DumpColumnConverter(const string& path, const string& col_path)
-  : gen_(path, col_path), col_path_(col_path) {
-    gen_.next(&col_meta_data, reader_);
-    value_read_ = 0;
-    def_lvl_ = rep_lvl_ = 0;
-    reader_->HasNext();
-  }
+  DumpColumnValueChunk(ColumnReader& reader, const string& col_path)
+  : ColumnValueChunk(reader), col_path_(col_path) {
 
-  ~DumpColumnConverter() {
   }
-
-  bool next() {
-    if (reader_->HasNext()) {
-      _next_value();
-      return true;
-    } else {
-      value_read_ --;
-      if (value_read_ >= 0) {
-        return true;
+  void dumpNextValue() {
+    int def_lvl = def_lvls_[def_lvl_pos_];
+    def_lvl_pos_ ++;
+    if (def_lvl == reader_.MaxDefinitionLevel()) {
+      cout << " " << col_path_ << " : ";
+      switch (reader_.metadata_->type) {
+      case parquet::Type::BOOLEAN: cout << boolValue(); break;
+      case parquet::Type::INT32: cout << int32Value(); break;
+      case parquet::Type::INT64: cout << int64Value(); break;
+      case parquet::Type::FLOAT: cout << floatValue(); break;
+      case parquet::Type::DOUBLE: cout << doubleValue(); break;
+      case parquet::Type::INT96: cout << int96Value(); break;
+      case parquet::Type::BYTE_ARRAY: cout << byteArrayValue(); break;
       }
-      return false;
+      cout << "\n";
+      val_buf_pos_++;
     }
   }
-
-  bool HasNext() {
-    return value_read_ > 0 || reader_->HasNext();
-  }
-
-  void consume(int def_lvl) {
-    cout<< " " << col_path_ << " : ";
-    if (def_lvl < gen_.GetMaxDefinitionLevel())
-      cout << "NULL";
-    else {
-    reader_->nextValue();
-    switch (col_meta_data.type) {
-    case Type::BOOLEAN: cout << reader_->boolValue(); break;
-    case Type::INT32: cout << reader_->int32Value(); break;
-    case Type::INT64: cout << reader_->int64Value(); break;
-    case Type::FLOAT: cout << reader_->floatValue(); break;
-    case Type::DOUBLE: cout << reader_->doubleValue(); break;
-    case Type::BYTE_ARRAY: cout << ByteArrayToString(reader_->byteArrayValue()); break;
-    default: break;
-    }
-    }
-    cout << "\n";
-    value_read_ --;
-  }
-
 private:
-  void _next_value() {
-/*
-    switch (col_meta_data.type) {
-    case Type::BOOLEAN: reader_->GetBool(&def_lvl_, &rep_lvl_); break;
-    case Type::INT32: reader_->GetInt32(&def_lvl_, &rep_lvl_); break;
-    case Type::INT64: reader_->GetInt64(&def_lvl_, &rep_lvl_); break;
-    case Type::FLOAT: reader_->GetFloat(&def_lvl_, &rep_lvl_); break;
-    case Type::DOUBLE: reader_->GetDouble(&def_lvl_, &rep_lvl_); break;
-    case Type::BYTE_ARRAY: reader_->GetByteArray(&def_lvl_, &rep_lvl_); break;
-    }*/
-    //reader_->nextValue();
-    //value_read_ ++;
-  }
-protected:
-  ColumnChunkGenerator gen_;
-  parquet::ColumnMetaData col_meta_data;
   string col_path_;
-  int def_lvl_;
-  int rep_lvl_;
-  //AnyType value_;
-  int value_read_;
+};
+
+struct equal_int64 {
+  int64_t v_;
+  equal_int64 (int64_t v): v_(v){}
+
+  int operator()(size_t num_values, void* buf) {
+    if (num_values == 0)
+      return 1;
+    int64_t id = *(int64_t*)buf;
+    if (id == v_)
+      return 1;
+    return 0;
+  }
 };
 
 class DumpColumnConverterFactory : public ColumnConverterFactory {
 public:
-  DumpColumnConverterFactory(SchemaHelper& helper, const string& file_path)
-  : helper_(helper), file_path_(file_path) {
-    converters_.resize(helper.schema.size());
+  struct matchset_t {
+    DumpColumnConverterFactory& fac_;
+
+    bool get(int id) {
+      ColumnValueChunk& vc = fac_.GetChunk(1);
+      vc.scanRecordBoundary();
+      return 1 == vc.applyFilter(equal_int64(fac_.filter_value_));
+    }
+
+    matchset_t(DumpColumnConverterFactory& fac)
+    : fac_(fac){}
+  };
+
+  DumpColumnConverterFactory(int64_t filter_value,
+                             bool_expr_tree_t& tree,
+    SchemaHelper& helper, const string& file_path)
+  : filter_value_(filter_value), tree_(tree),
+    helper_(helper), file_path_(file_path) {
+
+    gens_.resize(helper.schema.size());
+    col_metadatas_.resize(helper.schema.size());
+    readers_.resize(helper.schema.size());
+    value_chunks_.resize(helper.schema.size());
+
     record_count_ = 0;
   }
 
   ~DumpColumnConverterFactory() {
-    for ( int i = 0 ; i < converters_.size(); ++i ) {
-      delete converters_[i];
-    }
   }
 
-  int applyFilter() {
-    cerr << "##### record " << record_count_ << " ####\n";
-    if (0 == (record_count_ & 1)) {
-      int v = 0;
-      for(int i=0; i<helper_.schema.size(); ++i) {
-        const SchemaElement& e = helper_.schema[i];
-        if (e.__isset.num_children)
-          continue;
-        ColumnConverter* cnv = GetConverter(i);
-        if (cnv) {
-          int si = cnv->skipRecord();
-          if (cnv->reader_->HasNext())
-            v |= 1;
-        }
-      }
-      record_count_ ++;
-      return (v>0? 1:0);
-    }
+  bool applyFilter() {
     record_count_ ++;
-    return 0;
+    matchset_t s(*this);
+    bool r = tree_.eval(0, s);
+    if (!r) {
+      cerr << "##### record " << record_count_ << " ####\n";
+    }
+    return r;
   }
 
-  virtual ColumnConverter* GetConverter(int fid) {
-    if (converters_[fid] == NULL) {
-      const string& col = helper_.GetElementPath(fid);
-      if (col.size() <= 0)
-        return NULL;
-      //cerr << col << "\n";
-      converters_[fid] = new DumpColumnConverter(file_path_, col);
-      //converters_[fid]->next();
-    }
-    return converters_[fid];
+  void consumeValueChunk(int fid, ColumnValueChunk& ch) {
+    value_chunks_[fid]->dumpNextValue();
   }
   
+  virtual ColumnValueChunk& GetChunk(int fid) {
+    if (gens_[fid] == NULL) {
+      const string& col = helper_.GetElementPath(fid);
+      gens_[fid] = new ColumnChunkGenerator(file_path_, col);
+    }
+    if (value_chunks_[fid] == NULL) {
+      const string& col = helper_.GetElementPath(fid);
+      parquet::ColumnMetaData& col_meta_data = col_metadatas_[fid];
+      gens_[fid]->next(&col_meta_data, readers_[fid]);
+      readers_[fid]->HasNext();
+      value_chunks_[fid] = new DumpColumnValueChunk(*readers_[fid], col);
+    }
+    return *value_chunks_[fid];
+  }
 private:
+  int64_t filter_value_;
+  bool_expr_tree_t& tree_;
   SchemaHelper& helper_;
   string file_path_;
-  vector<ColumnConverter*> converters_;
+  vector<ColumnChunkGenerator*> gens_;
+  vector<parquet::ColumnMetaData> col_metadatas_;
+  vector<boost::shared_ptr<ColumnReader> > readers_;
+  vector<DumpColumnValueChunk*> value_chunks_;
   int record_count_;
 };
 
-// Simple example which reads all the values in the file and outputs the number of
-// values, number of nulls and min/max for each column.
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    cerr << "dump_test: <file_name>\n";
-    return 0;
-  }
-  
-  SchemaHelper helper(argv[1]);
+  int filter_value = 0;
+  int col_id = 1;
+  string filename;
   vector<string> columns;
+
+  int opt;
+  while ((opt = getopt(argc, argv, "c:v:f:")) != -1) {
+    switch(opt) {
+    case 'c': col_id = atoi(optarg); break;
+    case 'v': filter_value = atoi(optarg); break;
+    case 'f': filename = optarg; break;
+    }
+  }
+
+  vector<expr_node_t> nodes;
+  nodes.push_back(expr_node_t(col_id));
+  bool_expr_tree_t t(nodes);
+
+  SchemaHelper helper(filename);
   columns.reserve( argc - 1 );
-  for (int i = 2; i < argc ; ++i) {
+  for (int i = optind; i < argc ; ++i) {
     columns.push_back(argv[i]);
   }
 
-  DumpColumnConverterFactory fac(helper, argv[1]);
+  DumpColumnConverterFactory fac(filter_value, t, helper, filename);
   RecordAssembler ra = RecordAssembler(helper, fac);
   ra.selectOutputColumns(columns);
 

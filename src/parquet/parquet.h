@@ -45,6 +45,10 @@ struct ByteArray {
   const uint8_t* ptr;
 };
 
+struct Int96 {
+  uint32_t i[3];
+};
+
 class ParquetException : public std::exception {
  public:
   static void EofException() { throw ParquetException("Unexpected end of stream."); }
@@ -232,14 +236,20 @@ class ColumnReader {
   ByteArray byteArrayValue();
 
   int nextDefinitionLevel();
+  int peekRepetitionLevel();
   int nextRepetitionLevel();
   int nextValue() {
     if (buffered_values_offset_ == num_decoded_values_)
       BatchDecode();
     else
       buffered_values_offset_++;
+    num_buffered_values_ --;
     return buffered_values_offset_;
   }
+  void copyValues(std::vector<uint8_t>& buf, int value_count);
+
+  int MaxDefinitionLevel() const {
+    return this->max_definition_level_; }
 
  private:
   bool ReadNewPage();
@@ -252,8 +262,9 @@ class ColumnReader {
   void BatchDecode();
 
   Config config_;
-
+public:
   const parquet::ColumnMetaData* metadata_;
+private:
   const parquet::SchemaElement* schema_;
   InputStream* stream_;
 
@@ -281,7 +292,6 @@ class ColumnReader {
   int num_decoded_values_;
   int buffered_values_offset_;
 
-  int saved_def_level_;
   int saved_rep_level_;
 };
 
@@ -317,37 +327,102 @@ private:
   boost::scoped_ptr<InputStream> input_;
 };
 
-class ColumnConverter {
+// vector of column rep/def levels, and values
+// for a same record
+class ColumnValueChunk {
 public:
-  virtual ~ColumnConverter () {}
-
-  //return value:
-  //  -1  stip all
-  //  0   skip the rest of record
-  virtual bool next() = 0;
-
-  virtual void consume(int def_lvl) = 0; 
-  virtual bool HasNext() = 0;
-
-  int skipRecord() {
-    return reader_->skipCurrentRecord();
+  ColumnValueChunk(ColumnReader& reader):reader_(reader){
+    value_loaded_ = false;
+  	rep_lvl_pos_ = 0;
+	  def_lvl_pos_ = 0;
+	  val_buf_pos_ = 0;
+	  num_values_ = 0;
   }
 
-protected:
-  ColumnConverter() {}
+  void resetBufferPos() {
+    rep_lvl_pos_ = 0;
+    def_lvl_pos_ = 0;
+    val_buf_pos_ = 0;
+  }
+  void clearBuffer() {
+    rep_lvls_.resize(0);
+    def_lvls_.resize(0);
+    val_buff_.resize(0);
+    resetBufferPos();
+    value_loaded_ = false;
+  }
 
-public:
-  boost::shared_ptr<ColumnReader> reader_;
-  //int def_lvl_;
-  //int rep_lvl_;
+  void scanRecordBoundary();
+
+  template<typename F>
+  int applyFilter(F f){
+    int r = f(num_values_, (void*)&val_buff_[0]);
+    return r;
+  }
+
+  int nextDefinitionLevel() {
+    if (def_lvl_pos_ < def_lvls_.size())
+      return def_lvls_[def_lvl_pos_++];
+    return 0;
+  }
+
+  int nextRepetitionLevel() {
+  	if (rep_lvl_pos_ < rep_lvls_.size())
+      return rep_lvls_[rep_lvl_pos_++];
+	  return 0;
+  }
+
+  bool boolValue() {
+    return reinterpret_cast<bool*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  int32_t int32Value() {
+    return reinterpret_cast<int32_t*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  int64_t int64Value() {
+    return reinterpret_cast<int64_t*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  Int96 int96Value() {
+    return reinterpret_cast<Int96*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  float floatValue() {
+    return reinterpret_cast<float*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  double doubleValue() {
+    return reinterpret_cast<double*>(&val_buff_[0])[val_buf_pos_];
+  }
+
+  ByteArray byteArrayValue() {
+    return reinterpret_cast<ByteArray*>(&val_buff_[0])[val_buf_pos_];
+  }
+  // number of values, including NULL
+  int valueLoaded() const {
+	return value_loaded_; }
+  bool HasNext() { return reader_.HasNext(); }
+
+protected:
+  ColumnReader& reader_;
+  bool value_loaded_;
+  int num_values_;
+
+  int rep_lvl_pos_;
+  int def_lvl_pos_;
+  int val_buf_pos_;
+  std::vector<int> rep_lvls_;
+  std::vector<int> def_lvls_;
+  std::vector<uint8_t> val_buff_;
 };
 
 class ColumnConverterFactory {
 public:
-  // apply record level filter to determine if current record 
-  // should be skipped
-  virtual int applyFilter() = 0;
-  virtual ColumnConverter* GetConverter(int fid) = 0;
+  virtual bool applyFilter() = 0;
+  virtual ColumnValueChunk& GetChunk(int fid) = 0;
+  virtual void consumeValueChunk(int fid, ColumnValueChunk& ch) = 0;
+  virtual ~ColumnConverterFactory(){};
 };
 
 class RecordAssembler {
