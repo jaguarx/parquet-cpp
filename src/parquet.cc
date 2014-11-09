@@ -605,16 +605,12 @@ int RecordAssembler::assemble() {
   int fid = entry_state;
   while (fid != ROOT_NODE) {
     ColumnValueChunk& ch = fac_.GetChunk(fid);
+    if (!ch.valueLoaded())
+      ch.scanRecordBoundary();
     if (skip_record) {
-      if (ch.valueLoaded())
-        ch.clearBuffer();
-      else
-    	ch.scanRecordBoundary();
+      ch.clearBuffer();
     } else {
-      if (!ch.valueLoaded())
-        ch.scanRecordBoundary();
-      else
-    	ch.resetBufferPos();
+   	  ch.resetBufferPos();
       ch.nextRepetitionLevel();
     }
     fid = fsm_.GetNextState(fid, 0);
@@ -678,7 +674,7 @@ string build_path_name(const vector<string>& path_in_schema) {
   return ss.str();
 }
 
-bool ColumnChunkGenerator::next(ColumnMetaData* pmetadata, shared_ptr<ColumnReader>& reader) 
+bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
 {
   if (row_group_idx_ >= metadata_.row_groups.size())
     return false;
@@ -731,7 +727,7 @@ bool ColumnChunkGenerator::next(ColumnMetaData* pmetadata, shared_ptr<ColumnRead
       input_.swap(input);
     }
 
-    *pmetadata = col.meta_data;
+    column_metadata_ = col.meta_data;
    
     col_chunk_ = col; 
     reader.reset(new ColumnReader(&(col_chunk_.meta_data), &metadata_.schema[col_idx_],

@@ -37,6 +37,8 @@
 
 namespace parquet_cpp {
 
+bool GetFileMetadata(const std::string& path, parquet::FileMetaData* metadata);
+
 class Codec;
 class Decoder;
 
@@ -312,10 +314,18 @@ public:
     return col_path_;
   }
 
-  bool next(parquet::ColumnMetaData*, boost::shared_ptr<ColumnReader>&);
+  const parquet::SchemaElement& schemaElement() const {
+    return metadata_.schema[col_idx_]; }
+
+  const parquet::ColumnMetaData& columnMetaData() const {
+    return column_metadata_; }
+
+  bool next(boost::shared_ptr<ColumnReader>&);
+
 private:
   std::string file_path_;
   parquet::FileMetaData metadata_;
+  parquet::ColumnMetaData column_metadata_;
   int row_group_idx_;
 
   std::string col_path_;

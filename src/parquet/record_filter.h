@@ -31,7 +31,7 @@ public:
   bool eval(int node_id, T& nodeset) const {
     const expr_node_t& n = nodes_[node_id];
     switch(n.op_) {
-    case OP_LEAF: return nodeset.get(node_id);
+    case OP_LEAF: return nodeset.get(n.id_);
     case OP_NOT: return ! eval(n.children_[0], nodeset);
     case OP_OR: {
       for(size_t i=0; i<n.children_.size(); ++i) {

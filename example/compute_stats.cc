@@ -70,7 +70,6 @@ int main(int argc, char** argv) {
   //int max_def_level = helper.GetMaxDefinitionLevel(col_idx);
 
   ColumnChunkGenerator generator(argv[1], col_idx);
-  parquet::ColumnMetaData col_meta_data;
   boost::shared_ptr<ColumnReader> reader;
 
   bool first_val = true;
@@ -81,7 +80,8 @@ int main(int argc, char** argv) {
   int max_def_level = generator.GetMaxDefinitionLevel();
   int max_rep_level = generator.GetMaxRepetitionLevel();
 
-  while (generator.next(&col_meta_data, reader)) {
+  while (generator.next(reader)) {
+    const parquet::ColumnMetaData& col_meta_data = generator.columnMetaData();
     int def_level, rep_level;
     while (reader->HasNext()) {
       switch (col_meta_data.type) {
@@ -173,7 +173,7 @@ int main(int argc, char** argv) {
   cout << generator.GetColumnPath() << endl;
   cout << "  Num Values: " << num_values << endl;
   cout << "  Num Nulls: " << num_nulls << endl;
-  switch (col_meta_data.type) {
+  switch (generator.columnMetaData().type) {
     case Type::BOOLEAN:
       cout << "  Min: " << min.bool_val << endl;
       cout << "  Max: " << max.bool_val << endl;
