@@ -248,7 +248,7 @@ class ColumnReader {
     num_buffered_values_ --;
     return buffered_values_offset_;
   }
-  void copyValues(std::vector<uint8_t>& buf, int value_count);
+  int copyValues(std::vector<uint8_t>& buf, int value_count);
 
   int MaxDefinitionLevel() const {
     return this->max_definition_level_; }

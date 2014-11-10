@@ -201,11 +201,14 @@ int _dump_columns(int argc, char** argv) {
   while (gen.next(reader)) {
     int64_t num_values = gen.columnMetaData().num_values;
     reader->HasNext();
-    while (num_values > 0) {
-      int batch_size = std::min(4096, (int)num_values);
-      reader->copyValues(buf, batch_size);
-      num_values -= batch_size;
-      dump_values(cout, gen.schemaElement(), &buf[0], batch_size);
+    int batch_size = std::min(4096, (int)num_values);
+    while (batch_size > 0) {
+      batch_size = reader->copyValues(buf, batch_size);
+      if (batch_size > 0) {
+        num_values -= batch_size;
+        dump_values(cout, gen.schemaElement(), &buf[0], batch_size);
+        batch_size = std::min(4096, (int)num_values);
+      }
     }
   }
   return 0;

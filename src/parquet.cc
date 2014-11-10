@@ -333,59 +333,61 @@ int ColumnReader::skipValue(int values) {
   return values;
 }
 
-void ColumnReader::copyValues(vector<uint8_t>& buf, int max_values) {
+int ColumnReader::copyValues(vector<uint8_t>& buf, int max_values) {
   int buf_bump = std::min(max_values,
 	    num_decoded_values_ - buffered_values_offset_);
   max_values -= buf_bump;
   uint8_t* pvalbuf = &values_buffer_[0];
+  int values = 0;
   num_buffered_values_ -= buf_bump;
   switch (metadata_->type) {
     case parquet::Type::BOOLEAN: {
       buf.resize(max_values);
       bool* pa = reinterpret_cast<bool*>(pvalbuf) + buffered_values_offset_;
       buf.assign(pa, pa+buf_bump);
-      num_buffered_values_ -= current_decoder_->GetBool(
+      values = current_decoder_->GetBool(
     		  reinterpret_cast<bool*>(&buf[0])+buf_bump, max_values);
     }; break;
     case parquet::Type::INT32: {
       buf.resize(max_values*sizeof(int32_t));
       int32_t* pa = reinterpret_cast<int32_t*>(pvalbuf) + buffered_values_offset_;
       buf.assign(pa, pa+buf_bump);
-      num_buffered_values_ -= current_decoder_->GetInt32(
+      values = current_decoder_->GetInt32(
     		  reinterpret_cast<int32_t*>(&buf[0])+buf_bump, max_values);
     }; break;
     case parquet::Type::INT64: {
         buf.resize(max_values*sizeof(int64_t));
         int64_t* pa = reinterpret_cast<int64_t*>(pvalbuf) + buffered_values_offset_;
         buf.assign(pa, pa+buf_bump);
-        num_buffered_values_ -= current_decoder_->GetInt64(
+        values = current_decoder_->GetInt64(
         		reinterpret_cast<int64_t*>(&buf[0])+buf_bump, max_values);
       }; break;
     case parquet::Type::FLOAT:  {
         buf.resize(max_values*sizeof(float));
         float* pa = reinterpret_cast<float*>(pvalbuf) + buffered_values_offset_;
         buf.assign(pa, pa+buf_bump);
-        num_buffered_values_ -= current_decoder_->GetFloat(
+        values = current_decoder_->GetFloat(
         		reinterpret_cast<float*>(&buf[0])+buf_bump, max_values);
       }; break;
     case parquet::Type::DOUBLE: {
         buf.resize(max_values*sizeof(double));
         double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
         buf.assign(pa, pa+buf_bump);
-        num_buffered_values_ -= current_decoder_->GetDouble(
+        values = current_decoder_->GetDouble(
         		reinterpret_cast<double*>(&buf[0])+buf_bump, max_values);
       }; break;
     case parquet::Type::BYTE_ARRAY:{
         buf.resize(max_values*sizeof(ByteArray));
         double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
         buf.assign(pa, pa+buf_bump);
-        num_buffered_values_ -= current_decoder_->GetByteArray(
+        values = current_decoder_->GetByteArray(
         		reinterpret_cast<ByteArray*>(&buf[0])+buf_bump, max_values);
       }; break;
     default:
       ParquetException::NYI("Unsupported type.");
   }
-
+  num_buffered_values_ -= values;
+  return values;
 }
 
 int ColumnReader::skipCurrentRecord() {

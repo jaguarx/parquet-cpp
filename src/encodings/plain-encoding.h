@@ -98,7 +98,7 @@ class PlainDecoder : public Decoder {
       values ++;
     }
     num_values_ -= values;
-    return max_values;
+    return values;
   }
 
  private:
