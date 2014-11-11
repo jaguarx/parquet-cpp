@@ -250,6 +250,12 @@ class ColumnReader {
   }
   int copyValues(std::vector<uint8_t>& buf, int value_count);
 
+  int decodeRepetitionLevels(std::vector<int32_t>& repetition_levels,
+                             int value_count);
+  // definition_levels
+  int decodeValues(std::vector<uint8_t>& buf,
+                   std::vector<int32_t>& definition_levels,
+                   int value_count);
   int MaxDefinitionLevel() const {
     return this->max_definition_level_; }
 

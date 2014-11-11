@@ -417,6 +417,34 @@ int ColumnReader::skipCurrentRecord() {
   return (HasNext())? 1: 0;
 }
 
+int ColumnReader::decodeRepetitionLevels(
+    vector<int32_t>& buf,
+    int value_count)
+{
+  int values = min(num_buffered_values_, value_count);
+  buf.resize(values);
+  values = repetition_level_decoder_->GetInt32(reinterpret_cast<int32_t*>(&buf[0]), values);
+  return values;
+}
+
+// definition_levels
+int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
+                 std::vector<int32_t>& definition_levels,
+                 int value_count)
+{
+  int values = min(num_buffered_values_, value_count);
+  definition_levels.resize(values);
+  values = repetition_level_decoder_->GetInt32(
+      reinterpret_cast<int32_t*>(&definition_levels[0]), values);
+  int num_nulls = 0;
+  for(int i=0; i<values; ++i)
+    if (definition_levels[i] < max_definition_level_)
+      num_nulls ++;
+  int num_nonnulls = values - num_nulls;
+  copyValues(buf, num_nonnulls);
+  return values;
+}
+
 SchemaHelper::SchemaHelper(const string& file_path) {
   parquet::FileMetaData metadata;
   if (!GetFileMetadata(file_path, &metadata))
