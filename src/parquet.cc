@@ -434,13 +434,19 @@ int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
 {
   int values = min(num_buffered_values_, value_count);
   definition_levels.resize(values);
-  values = repetition_level_decoder_->GetInt32(
+  int num_nonnulls = values;
+  if (max_definition_level_ > 0) {
+    values = definition_level_decoder_->GetInt32(
       reinterpret_cast<int32_t*>(&definition_levels[0]), values);
-  int num_nulls = 0;
-  for(int i=0; i<values; ++i)
-    if (definition_levels[i] < max_definition_level_)
-      num_nulls ++;
-  int num_nonnulls = values - num_nulls;
+    int num_nulls = 0;
+    for(int i=0; i<values; ++i) {
+      if (definition_levels[i] < max_definition_level_)
+        num_nulls ++;
+    }
+    num_nonnulls = values - num_nulls;
+  } else {
+    memset(&definition_levels[0], sizeof(int32_t)*values, 0);
+  }
   copyValues(buf, num_nonnulls);
   return values;
 }

@@ -28,8 +28,14 @@ static inline void dump_bytes(ostream& oss, uint8_t* val, int len) {
     oss << hex << val[i];
 }
 
-void dump_values(ostream& oss, const parquet::SchemaElement& element, uint8_t* buf, int values) {
+void dump_values(ostream& oss,
+  const parquet::SchemaElement& element, uint8_t* buf,
+  int32_t* def_lvls, int32_t max_def_lvl, int values) {
   for( int i=0; i < values; ++i) {
+    if ((def_lvls != NULL) && (def_lvls[i] < max_def_lvl)) {
+      oss << "NULL\n";
+      continue;
+    }
     switch(element.type) {
     case parquet::Type::BOOLEAN: oss << *(bool*)buf << "\n"; buf ++; break;
     case parquet::Type::INT32: oss << *(int32_t*)buf << "\n"; buf += sizeof(int32_t); break;
@@ -54,7 +60,7 @@ public:
     def_lvl_pos_ ++;
     if (def_lvl == reader_.MaxDefinitionLevel()) {
       cout << " " << col_path_ << " : ";
-      dump_values(cout, element_, &val_buff_[0], 1);
+      dump_values(cout, element_, &val_buff_[0], NULL, 0, 1);
       cout << "\n";
       val_buf_pos_++;
     }
@@ -203,10 +209,13 @@ int _dump_columns(int argc, char** argv) {
     reader->HasNext();
     int batch_size = std::min(4096, (int)num_values);
     while (batch_size > 0) {
-      batch_size = reader->copyValues(buf, batch_size);
+      vector<int32_t> def_lvls;
+      batch_size = reader->decodeValues(buf, def_lvls, batch_size);
       if (batch_size > 0) {
         num_values -= batch_size;
-        dump_values(cout, gen.schemaElement(), &buf[0], batch_size);
+        dump_values(cout, gen.schemaElement(), &buf[0],
+                    &def_lvls[0],
+                    reader->MaxDefinitionLevel(), batch_size);
         batch_size = std::min(4096, (int)num_values);
       }
     }
