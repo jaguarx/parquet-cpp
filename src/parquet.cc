@@ -608,24 +608,17 @@ void ColumnValueChunk::scanRecordBoundary(){
 
   int rep_lvl = reader_.nextRepetitionLevel();
   rep_lvls_.push_back(rep_lvl);
-  int def_lvl = reader_.nextDefinitionLevel();
-  def_lvls_.push_back(def_lvl);
-  if (def_lvl == reader_.MaxDefinitionLevel())
-    num_values_ ++;
+  num_values_ = 1;
   do {
     rep_lvl = reader_.peekRepetitionLevel();
     if (rep_lvl > 0) {
-      rep_lvl = reader_.nextRepetitionLevel();
-  	  rep_lvls_.push_back(rep_lvl);
-      def_lvl = reader_.nextDefinitionLevel();
-      def_lvls_.push_back(def_lvl);
-      if (def_lvl == reader_.MaxDefinitionLevel()) {
-        num_values_ ++;
-      }
+      num_values_ ++;
+      reader_.nextRepetitionLevel();
+      rep_lvls_.push_back(rep_lvl);
     }
   } while (rep_lvl > 0);
   rep_lvls_.push_back(0); //add a terminating 0
-  reader_.copyValues(val_buff_, num_values_);
+  reader_.decodeValues(val_buff_, def_lvls_, num_values_);
   value_loaded_ = true;
 }
 
