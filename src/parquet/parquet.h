@@ -347,7 +347,10 @@ private:
 // for a same record
 class ColumnValueChunk {
 public:
-  ColumnValueChunk(ColumnReader& reader):reader_(reader){
+  ColumnValueChunk(ColumnChunkGenerator& generator)
+  : generator_(generator)
+  {
+    generator_.next(reader_);
     value_loaded_ = false;
   	rep_lvl_pos_ = 0;
 	  def_lvl_pos_ = 0;
@@ -418,10 +421,16 @@ public:
   // number of values, including NULL
   int valueLoaded() const {
 	return value_loaded_; }
-  bool HasNext() { return reader_.HasNext(); }
+  bool HasNext() {
+    if (reader_->HasNext())
+      return true;
+    generator_.next(reader_);
+    return reader_->HasNext();
+  }
 
 protected:
-  ColumnReader& reader_;
+  ColumnChunkGenerator& generator_;
+  boost::shared_ptr<ColumnReader> reader_;
   bool value_loaded_;
   int num_values_;
 

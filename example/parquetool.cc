@@ -52,15 +52,16 @@ void dump_values(ostream& oss,
 
 class DumpColumnValueChunk : public ColumnValueChunk {
 public:
-  DumpColumnValueChunk(ColumnReader& reader, const parquet::SchemaElement& element, const string& col_path)
-  : ColumnValueChunk(reader), element_(element), col_path_(col_path) {}
+  DumpColumnValueChunk(ColumnChunkGenerator& generator, const string& col_path)
+  : ColumnValueChunk(generator), element_(generator.schemaElement()), col_path_(col_path) {
+  }
 
   void dumpNextValue() {
     int def_lvl = def_lvls_[def_lvl_pos_];
     def_lvl_pos_ ++;
-    if (def_lvl == reader_.MaxDefinitionLevel()) {
+    if (def_lvl == reader_->MaxDefinitionLevel()) {
       cout << " " << col_path_ << " : ";
-      dump_values(cout, element_, &val_buff_[0], NULL, 0, 1);
+      dump_values(cout, generator_.schemaElement(), &val_buff_[0], NULL, 0, 1);
       cout << "\n";
       val_buf_pos_++;
     }
@@ -107,7 +108,6 @@ public:
     helper_(helper), file_path_(file_path) {
 
     gens_.resize(helper.schema.size());
-    readers_.resize(helper.schema.size());
     value_chunks_.resize(helper.schema.size());
 
     record_count_ = 0;
@@ -135,9 +135,7 @@ public:
     }
     if (value_chunks_[fid] == NULL) {
       const string& col = helper_.GetElementPath(fid);
-      gens_[fid]->next(readers_[fid]);
-      readers_[fid]->HasNext();
-      value_chunks_[fid] = new DumpColumnValueChunk(*readers_[fid], gens_[fid]->schemaElement(), col);
+      value_chunks_[fid] = new DumpColumnValueChunk(*gens_[fid], col);
     }
     return *value_chunks_[fid];
   }
@@ -148,7 +146,6 @@ private:
   SchemaHelper& helper_;
   string file_path_;
   vector<ColumnChunkGenerator*> gens_;
-  vector<boost::shared_ptr<ColumnReader> > readers_;
   vector<DumpColumnValueChunk*> value_chunks_;
   int record_count_;
 };
