@@ -220,6 +220,33 @@ int _dump_columns(int argc, char** argv) {
   return 0;
 }
 
+int _dump_column_chunk(int argc, char** argv) {
+  int opt;
+  int col_idx = 1;
+  while ((opt = getopt(argc, argv, "c:")) != -1) {
+    switch (opt) {
+    case 'c': col_idx = atoi(optarg); break;
+    }
+  }
+  if (optind >= argc)
+    return 1;
+
+  vector<uint8_t> buf;
+  ColumnChunkGenerator gen(argv[optind], col_idx);
+  boost::shared_ptr<ColumnReader> reader;
+  while (gen.next(reader)) {
+    const ColumnMetaData& cmd = gen.columnMetaData();
+    cout<< "num_values:" << cmd.num_values
+        << ", size:" << cmd.total_compressed_size << "/" << cmd.total_uncompressed_size
+        << ", encodings: ";
+    for(int i=0; i< cmd.encodings.size(); ++i) {
+        cout << ((i>0)?",":"") << cmd.encodings[i];
+    }
+    cout << "\n";
+  }
+  return 0;
+}
+
 int _search(int argc, char** argv) {
   int filter_value = 0;
   int col_id = 1;
@@ -259,6 +286,9 @@ command_t commands[] = {
   command_t("showschema", "<files>\n"
                           "\t\tshow schema of files",
      _show_schema),
+  command_t("columnchunk", "-c <col_id> <file>\n"
+                          "\t\tdump column chunk info",
+     _dump_column_chunk),
   command_t("dumpcolumn", "-c <col_id> <file>\n"
                           "\t\tdump column data",
      _dump_columns),
