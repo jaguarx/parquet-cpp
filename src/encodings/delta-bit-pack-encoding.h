@@ -23,7 +23,7 @@ namespace parquet_cpp {
 class DeltaBitPackDecoder : public Decoder {
  public:
   DeltaBitPackDecoder(const parquet::Type::type& type)
-    : Decoder(type, parquet::Encoding::DELTA_BINARY_PACKED),len_(0) {
+    : Decoder(type, parquet::Encoding::DELTA_BINARY_PACKED),len_(0),last_value_(0),values_current_mini_block_(0) {
     if (type != parquet::Type::INT32 && type != parquet::Type::INT64) {
       throw ParquetException("Delta bit pack encoding should only be for integer data.");
     }

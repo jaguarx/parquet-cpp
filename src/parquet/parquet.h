@@ -25,8 +25,6 @@
 #include "gen-cpp/parquet_constants.h"
 #include "gen-cpp/parquet_types.h"
 
-#include "impala/rle-encoding.h"
-
 // TCompactProtocol requires some #defines to work right.
 #define SIGNED_RIGHT_SHIFT_IS 1
 #define ARITHMETIC_RIGHT_SHIFT 1
@@ -36,9 +34,10 @@
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TBufferTransports.h>
+#include "impala/rle-encoding.h"
 
 namespace parquet_cpp {
-using std::vector;
+
 bool GetFileMetadata(const std::string& path, parquet::FileMetaData* metadata);
 
 class Codec;
@@ -376,21 +375,11 @@ public:
 
   void scanRecordBoundary();
 
-  // load records
-  int scanRecords(int num_records);
-  // load records and apply filters,
-  // if flags[i] == true, should skip all values for record #i
-  int scanRecords(int num_records, const std::vector<bool>& flags);
-
-  // apply filters to current loaded records
-  int filterRecords(int num_records, const std::vector<bool>& flags);
-
   template<typename F>
   int applyFilter(F f){
     int r = f(num_values_, (void*)&val_buff_[0]);
     return r;
   }
-
 
   int nextDefinitionLevel() {
     if (def_lvl_pos_ < def_lvls_.size())
@@ -433,10 +422,6 @@ public:
   }
 
   // number of values, including NULL
-  int recordsLoaded() const {
-    return num_records_; }
-
-  // number of values, including NULL
   int valueLoaded() const {
   	return value_loaded_; }
 
@@ -452,12 +437,10 @@ protected:
   boost::shared_ptr<ColumnReader> reader_;
   bool value_loaded_;
   int num_values_;
-  int num_records_;
 
   int rep_lvl_pos_;
   int def_lvl_pos_;
   int val_buf_pos_;
-  vector<int> record_boundries;
   std::vector<int> rep_lvls_;
   std::vector<int> def_lvls_;
   std::vector<uint8_t> val_buff_;

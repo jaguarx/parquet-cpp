@@ -38,6 +38,14 @@ class RleDecoder : public Decoder {
     decoder_.reset(new impala::RleDecoder(data_, num_bytes, bit_width_));
   }
 
+  RleDecoder* SetData(int num_values, int datalen, const uint8_t* data) {
+    num_values_ = num_values;
+    data_ = data + sizeof(uint32_t);
+    len_ = datalen;
+    decoder_.reset(new impala::RleDecoder(data_, datalen, bit_width_));
+    return this;
+  }
+
   virtual int GetSize() {
     return len_;
   }
