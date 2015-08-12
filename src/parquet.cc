@@ -162,7 +162,8 @@ bool ColumnReader::ReadNewPage() {
     if (bytes_read != compressed_len) ParquetException::EofException();
 
 
-    if (current_page_header_.type == PageType::DICTIONARY_PAGE) {
+    if (current_page_header_.type == PageType::DICTIONARY_PAGE ||
+        current_page_header_.type == PageType::DATA_PAGE) {
       // Uncompress it if we need to
       if (decompressor_ != NULL) {
         // Grow the uncompressed buffer if we need to.
@@ -173,6 +174,9 @@ bool ColumnReader::ReadNewPage() {
             compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
         buffer = &decompression_buffer_[0];
       }
+    }
+
+    if (current_page_header_.type == PageType::DICTIONARY_PAGE) {
       unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
           decoders_.find(Encoding::RLE_DICTIONARY);
       if (it != decoders_.end()) {
@@ -187,42 +191,31 @@ bool ColumnReader::ReadNewPage() {
       current_decoder_ = decoders_[Encoding::RLE_DICTIONARY].get();
       continue;
     } else if (current_page_header_.type == PageType::DATA_PAGE) {
-      // Uncompress it if we need to
-      if (decompressor_ != NULL) {
-        // Grow the uncompressed buffer if we need to.
-        if (uncompressed_len > decompression_buffer_.size()) {
-          decompression_buffer_.resize(uncompressed_len);
-        }
-        decompressor_->Decompress(
-            compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
-        buffer = &decompression_buffer_[0];
-      }
       // Read a data page.
       const DataPageHeader& data_page_header = current_page_header_.data_page_header;
       num_buffered_values_ = data_page_header.num_values;
 
       // repetition levels
       if (max_repetition_level_ > 0) {
-        int num_repetition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
-        buffer += sizeof(uint32_t);
+/*        buffer += sizeof(uint32_t);
         repetition_level_decoder_.reset(
             new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
         buffer += num_repetition_bytes;
         uncompressed_len -= sizeof(uint32_t);
-        uncompressed_len -= num_repetition_bytes;
+        uncompressed_len -= num_repetition_bytes; */
       }
 
       // definition levels.
       if (max_definition_level_ > 0) {
-        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
+/*        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
         buffer += sizeof(uint32_t);
         definition_level_decoder_.reset(
             new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
         buffer += num_definition_bytes;
         uncompressed_len -= sizeof(uint32_t);
-        uncompressed_len -= num_definition_bytes;
+        uncompressed_len -= num_definition_bytes; */
       }
 
       // Get a decoder object for this page or create a new decoder if this is the
@@ -276,30 +269,36 @@ bool ColumnReader::ReadNewPage() {
       const DataPageHeaderV2& data_page_header = current_page_header_.data_page_header_v2;
       num_buffered_values_ = data_page_header.num_values - data_page_header.num_nulls;
 
+      int repetition_levels_byte_length = data_page_header.repetition_levels_byte_length;
       // repetition levels
-      int num_repetition_bytes = data_page_header.repetition_levels_byte_length;
-      if (num_repetition_bytes > 0) {
+      if (data_page_header.repetition_levels_byte_length > 0) {
         int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
-        repetition_level_decoder_.reset(new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
-        buffer += num_repetition_bytes;
-        uncompressed_len -= num_repetition_bytes;
-        compressed_len -= num_repetition_bytes;
+        repetition_level_decoder_.reset(new impala::RleDecoder(buffer, 
+            data_page_header.repetition_levels_byte_length, bitwidth));
+        buffer += data_page_header.repetition_levels_byte_length;
+        uncompressed_len -= data_page_header.repetition_levels_byte_length;
+        compressed_len -= data_page_header.repetition_levels_byte_length;
       }
 
-      int num_definition_bytes = data_page_header.definition_levels_byte_length;
-      if (num_definition_bytes > 0) {
+      //definition levels.
+      if (data_page_header.definition_levels_byte_length > 0) {
         int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
-        definition_level_decoder_.reset(new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
-        buffer += num_definition_bytes;
-        uncompressed_len -= num_definition_bytes;
-        compressed_len -= num_definition_bytes;
+        definition_level_decoder_.reset(new impala::RleDecoder(buffer, 
+            data_page_header.definition_levels_byte_length, bitwidth));
+        buffer += data_page_header.definition_levels_byte_length;
+        uncompressed_len -= data_page_header.definition_levels_byte_length;
+        compressed_len -= data_page_header.definition_levels_byte_length;
       }
 
       if ((!data_page_header.__isset.is_compressed) || data_page_header.is_compressed) {
-        if (uncompressed_len > decompression_buffer_.size())
+        if (uncompressed_len > decompression_buffer_.size()) {
           decompression_buffer_.resize(uncompressed_len);
-        decompressor_->Decompress(compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
-        buffer = &decompression_buffer_[0];
+        }
+        if (decompressor_.get() != NULL) {
+          decompressor_->Decompress(
+              compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
+          buffer = &decompression_buffer_[0];
+        }
       }
 
       // Get a decoder object for this page or create a new decoder if this is the
@@ -308,7 +307,7 @@ bool ColumnReader::ReadNewPage() {
       if (IsDictionaryIndexEncoding(encoding)) encoding = Encoding::RLE_DICTIONARY;
 
       unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
-          decoders_.find(encoding);
+        decoders_.find(encoding);
       if (it != decoders_.end()) {
         current_decoder_ = it->second.get();
       } else {
@@ -372,7 +371,7 @@ bool ColumnReader::peekDefinitionRepetitionLevels(int* def_level, int* rep_level
 int ColumnReader::nextDefinitionLevel() {
   if (max_definition_level_ > 0) {
     int val = 0;
-    if (1 != definition_level_decoder_->Get(&val)) {
+    if (!definition_level_decoder_->Get(&val)) {
       return 0;
     }
     return val;
@@ -395,7 +394,7 @@ int ColumnReader::nextRepetitionLevel() {
   }
   if (max_repetition_level_ > 0) {
     int rep_lvl = 0;
-    if (1 != repetition_level_decoder_->Get(&rep_lvl)) {
+    if (!repetition_level_decoder_->Get(&rep_lvl)) {
       return 0;
     }
     return rep_lvl;
@@ -504,11 +503,11 @@ int ColumnReader::decodeRepetitionLevels(
 {
   int values = min(num_buffered_values_, value_count);
   buf.resize(values);
-  int i = 0;
-  while (i<values && repetition_level_decoder_->Get(&buf[i])) {
-    i++;
+  for (int i=0; i<values; ++i) {
+    if (!repetition_level_decoder_->Get(&buf[i]))
+      break;
   }
-  return i;
+  return values;
 }
 
 // definition_levels
@@ -520,13 +519,12 @@ int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
   definition_levels.resize(values);
   int num_nonnulls = values;
   if (max_definition_level_ > 0) {
-    int i = 0;
-    while (i<values && definition_level_decoder_->Get(&definition_levels[i])) {
-      ++i;
-    }
-    values = i;
     int num_nulls = 0;
     for(int i=0; i<values; ++i) {
+      int v = 0;
+      if (!definition_level_decoder_->Get(&definition_levels[i])) {
+        break;
+      }
       if (definition_levels[i] < max_definition_level_)
         num_nulls ++;
     }
@@ -704,7 +702,7 @@ void ColumnValueChunk::scanRecordBoundary() {
       rep_lvls_.push_back(rep_lvl);
     }
   } while (rep_lvl > 0);
-  rep_lvls_.push_back(0); //add a terminating 9
+  rep_lvls_.push_back(0); //add a terminating 0
   reader_->decodeValues(val_buff_, def_lvls_, num_values_);
   value_loaded_ = true;
 }
