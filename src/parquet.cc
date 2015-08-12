@@ -161,18 +161,18 @@ bool ColumnReader::ReadNewPage() {
     buffer = stream_->Read(compressed_len, &bytes_read);
     if (bytes_read != compressed_len) ParquetException::EofException();
 
-    // Uncompress it if we need to
-    if (decompressor_ != NULL) {
-      // Grow the uncompressed buffer if we need to.
-      if (uncompressed_len > decompression_buffer_.size()) {
-        decompression_buffer_.resize(uncompressed_len);
-      }
-      decompressor_->Decompress(
-          compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
-      buffer = &decompression_buffer_[0];
-    }
 
     if (current_page_header_.type == PageType::DICTIONARY_PAGE) {
+      // Uncompress it if we need to
+      if (decompressor_ != NULL) {
+        // Grow the uncompressed buffer if we need to.
+        if (uncompressed_len > decompression_buffer_.size()) {
+          decompression_buffer_.resize(uncompressed_len);
+        }
+        decompressor_->Decompress(
+            compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
+        buffer = &decompression_buffer_[0];
+      }
       unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
           decoders_.find(Encoding::RLE_DICTIONARY);
       if (it != decoders_.end()) {
@@ -187,38 +187,119 @@ bool ColumnReader::ReadNewPage() {
       current_decoder_ = decoders_[Encoding::RLE_DICTIONARY].get();
       continue;
     } else if (current_page_header_.type == PageType::DATA_PAGE) {
+      // Uncompress it if we need to
+      if (decompressor_ != NULL) {
+        // Grow the uncompressed buffer if we need to.
+        if (uncompressed_len > decompression_buffer_.size()) {
+          decompression_buffer_.resize(uncompressed_len);
+        }
+        decompressor_->Decompress(
+            compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
+        buffer = &decompression_buffer_[0];
+      }
       // Read a data page.
       const DataPageHeader& data_page_header = current_page_header_.data_page_header;
       num_buffered_values_ = data_page_header.num_values;
 
       // repetition levels
       if (max_repetition_level_ > 0) {
+        int num_repetition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
-
-        if (data_page_header.repetition_level_encoding == Encoding::RLE)
-          repetition_level_decoder_.reset(new parquet_cpp::RleDecoder(parquet::Type::INT32, bitwidth));
-        else
-          throw ParquetException("unsupported repetition encoding.");
-
-        repetition_level_decoder_->SetData(data_page_header.num_values,
-          buffer, uncompressed_len);
-        buffer += repetition_level_decoder_->GetSize();
-        uncompressed_len -= repetition_level_decoder_->GetSize();
+        buffer += sizeof(uint32_t);
+        repetition_level_decoder_.reset(
+            new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
+        buffer += num_repetition_bytes;
+        uncompressed_len -= sizeof(uint32_t);
+        uncompressed_len -= num_repetition_bytes;
       }
 
       // definition levels.
       if (max_definition_level_ > 0) {
+        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
+        buffer += sizeof(uint32_t);
+        definition_level_decoder_.reset(
+            new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
+        buffer += num_definition_bytes;
+        uncompressed_len -= sizeof(uint32_t);
+        uncompressed_len -= num_definition_bytes;
+      }
 
-        if (data_page_header.definition_level_encoding == Encoding::RLE)
-          definition_level_decoder_.reset(new parquet_cpp::RleDecoder(parquet::Type::INT32, bitwidth));
-        else
-          throw ParquetException("unsupported definition encoding.");
+      // Get a decoder object for this page or create a new decoder if this is the
+      // first page with this encoding.
+      Encoding::type encoding = data_page_header.encoding;
+      if (IsDictionaryIndexEncoding(encoding)) encoding = Encoding::RLE_DICTIONARY;
 
-        definition_level_decoder_->SetData(data_page_header.num_values,
-          buffer, uncompressed_len);
-        buffer += definition_level_decoder_->GetSize();
-        uncompressed_len -= definition_level_decoder_->GetSize();
+      unordered_map<Encoding::type, shared_ptr<Decoder> >::iterator it =
+          decoders_.find(encoding);
+      if (it != decoders_.end()) {
+        current_decoder_ = it->second.get();
+      } else {
+        shared_ptr<Decoder> decoder;
+        switch (encoding) {
+          case Encoding::PLAIN: {
+            if (schema_->type == Type::BOOLEAN) {
+              decoder.reset(new BoolDecoder());
+            } else {
+              decoder.reset(new PlainDecoder(schema_->type));
+            }
+            decoders_[encoding] = decoder;
+            current_decoder_ = decoder.get();
+            break;
+          }
+          case Encoding::RLE_DICTIONARY:
+            throw ParquetException("Dictionary page must be before data page.");
+
+          case Encoding::DELTA_BINARY_PACKED: {
+            decoder.reset(new DeltaBitPackDecoder(schema_->type));
+            decoders_[encoding] = decoder;
+            current_decoder_ = decoder.get();
+            break;
+          }
+          case Encoding::DELTA_BYTE_ARRAY: {
+            decoder.reset(new DeltaByteArrayDecoder());
+            decoders_[encoding] = decoder;
+            current_decoder_ = decoder.get();
+            break;
+          }
+          case Encoding::DELTA_LENGTH_BYTE_ARRAY:
+            ParquetException::NYI("Unsupported encoding");
+
+          default:
+            throw ParquetException("Unknown encoding type.");
+        }
+      }
+      current_decoder_->SetData(num_buffered_values_, buffer, uncompressed_len);
+      return true;
+    } else if (current_page_header_.type == PageType::DATA_PAGE_V2) {
+      // Read data page v2
+      const DataPageHeaderV2& data_page_header = current_page_header_.data_page_header_v2;
+      num_buffered_values_ = data_page_header.num_values - data_page_header.num_nulls;
+
+      // repetition levels
+      int num_repetition_bytes = data_page_header.repetition_levels_byte_length;
+      if (num_repetition_bytes > 0) {
+        int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
+        repetition_level_decoder_.reset(new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
+        buffer += num_repetition_bytes;
+        uncompressed_len -= num_repetition_bytes;
+        compressed_len -= num_repetition_bytes;
+      }
+
+      int num_definition_bytes = data_page_header.definition_levels_byte_length;
+      if (num_definition_bytes > 0) {
+        int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
+        definition_level_decoder_.reset(new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
+        buffer += num_definition_bytes;
+        uncompressed_len -= num_definition_bytes;
+        compressed_len -= num_definition_bytes;
+      }
+
+      if ((!data_page_header.__isset.is_compressed) || data_page_header.is_compressed) {
+        if (uncompressed_len > decompression_buffer_.size())
+          decompression_buffer_.resize(uncompressed_len);
+        decompressor_->Decompress(compressed_len, buffer, uncompressed_len, &decompression_buffer_[0]);
+        buffer = &decompression_buffer_[0];
       }
 
       // Get a decoder object for this page or create a new decoder if this is the
@@ -291,7 +372,7 @@ bool ColumnReader::peekDefinitionRepetitionLevels(int* def_level, int* rep_level
 int ColumnReader::nextDefinitionLevel() {
   if (max_definition_level_ > 0) {
     int val = 0;
-    if (1 != definition_level_decoder_->GetInt32(&val, 1)) {
+    if (1 != definition_level_decoder_->Get(&val)) {
       return 0;
     }
     return val;
@@ -313,8 +394,8 @@ int ColumnReader::nextRepetitionLevel() {
     return t;
   }
   if (max_repetition_level_ > 0) {
-	int rep_lvl = 0;
-    if (1 != repetition_level_decoder_->GetInt32(&rep_lvl, 1)) {
+    int rep_lvl = 0;
+    if (1 != repetition_level_decoder_->Get(&rep_lvl)) {
       return 0;
     }
     return rep_lvl;
@@ -423,8 +504,11 @@ int ColumnReader::decodeRepetitionLevels(
 {
   int values = min(num_buffered_values_, value_count);
   buf.resize(values);
-  values = repetition_level_decoder_->GetInt32(reinterpret_cast<int32_t*>(&buf[0]), values);
-  return values;
+  int i = 0;
+  while (i<values && repetition_level_decoder_->Get(&buf[i])) {
+    i++;
+  }
+  return i;
 }
 
 // definition_levels
@@ -436,8 +520,11 @@ int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
   definition_levels.resize(values);
   int num_nonnulls = values;
   if (max_definition_level_ > 0) {
-    values = definition_level_decoder_->GetInt32(
-      reinterpret_cast<int32_t*>(&definition_levels[0]), values);
+    int i = 0;
+    while (i<values && definition_level_decoder_->Get(&definition_levels[i])) {
+      ++i;
+    }
+    values = i;
     int num_nulls = 0;
     for(int i=0; i<values; ++i) {
       if (definition_levels[i] < max_definition_level_)
@@ -600,7 +687,7 @@ void SchemaFSM::dump(ostream& oss) const {
   }
 }
 
-void ColumnValueChunk::scanRecordBoundary(){
+void ColumnValueChunk::scanRecordBoundary() {
   rep_lvl_pos_ = 0;
   def_lvl_pos_ = 0;
   val_buf_pos_ = 0;
@@ -617,9 +704,82 @@ void ColumnValueChunk::scanRecordBoundary(){
       rep_lvls_.push_back(rep_lvl);
     }
   } while (rep_lvl > 0);
-  rep_lvls_.push_back(0); //add a terminating 0
+  rep_lvls_.push_back(0); //add a terminating 9
   reader_->decodeValues(val_buff_, def_lvls_, num_values_);
   value_loaded_ = true;
+}
+
+int ColumnValueChunk::scanRecords(int num_records){
+  rep_lvl_pos_ = 0;
+  def_lvl_pos_ = 0;
+  val_buf_pos_ = 0;
+  num_values_ = 0;
+  num_records_ = 0;
+
+  rep_lvls_.reserve(num_records);
+  int rep_lvl = 0;
+  while (num_records_ < num_records) {
+    rep_lvl = reader_->nextRepetitionLevel();
+    rep_lvls_.push_back(rep_lvl);
+    if (rep_lvl > 0) {
+      num_values_ ++;
+    } else {
+      num_records_ ++;
+    }
+  }
+  // read to last record boundary
+  rep_lvl = reader_->peekRepetitionLevel();
+  while (rep_lvl > 0) {
+    rep_lvls_.push_back(rep_lvl);
+    reader_->nextRepetitionLevel();
+    num_values_ ++;
+    rep_lvl = reader_->peekRepetitionLevel();
+  }
+  rep_lvls_.push_back(0); //add a terminating 0
+  reader_->decodeValues(val_buff_, def_lvls_, num_values_);
+  return num_records_;
+}
+
+int ColumnValueChunk::scanRecords(int num_records, const vector<bool>& flags){
+  rep_lvl_pos_ = 0;
+  def_lvl_pos_ = 0;
+  val_buf_pos_ = 0;
+  num_values_ = 0;
+  num_records_ = 0;
+
+  rep_lvls_.reserve(num_records);
+  int rep_lvl = 0;
+  bool skip_current = flags[num_records_];
+  vector<int> value_counts;
+  value_counts.resize(num_records);
+  while (num_records_ < num_records) {
+    rep_lvl = reader_->nextRepetitionLevel();
+    rep_lvls_.push_back(rep_lvl);
+    value_counts[num_records_]++;
+    num_values_ ++;
+    if (rep_lvl == 0) {
+      num_records_ ++;
+    }
+  }
+
+  // read to next record boundary
+  rep_lvl = reader_->peekRepetitionLevel();
+  while (rep_lvl > 0) {
+    rep_lvls_.push_back(rep_lvl);
+    reader_->nextRepetitionLevel();
+    num_values_ ++;
+    value_counts[num_records_]++;
+    rep_lvl = reader_->peekRepetitionLevel();
+  }
+  rep_lvls_.push_back(0); //add a terminating 0
+  for (int i=0; i<flags.size(); ++i){
+    if (flags[i]) {
+      reader_->skipValue(value_counts[i]);
+    } else
+      reader_->decodeValues(val_buff_, def_lvls_, num_values_);
+  }
+  //reader_->decodeValues(val_buff_, def_lvls_, num_values_);
+  return num_records_;
 }
 
 int RecordAssembler::assemble() {
@@ -639,7 +799,7 @@ int RecordAssembler::assemble() {
     if (skip_record) {
       ch.clearBuffer();
     } else {
-   	  ch.resetBufferPos();
+      ch.resetBufferPos();
       ch.nextRepetitionLevel();
     }
     fid = fsm_.GetNextState(fid, 0);

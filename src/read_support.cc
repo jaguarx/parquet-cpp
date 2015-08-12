@@ -84,7 +84,6 @@ bool GetFileMetadata(const string& path, FileMetaData* metadata) {
 
   DeserializeThriftMsg(metadata_buffer, &metadata_len, metadata);
   return true;
-
 }
 
 const uint8_t * _mmap_file(const string& path, uint64_t& off, uint64_t len, int& fd) {

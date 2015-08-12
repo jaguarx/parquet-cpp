@@ -76,7 +76,7 @@ struct equal_int64 {
   int64_t v_;
   equal_int64 (int64_t v): v_(v){}
 
-  int operator()(size_t num_values, void* buf) {
+  int operator()(size_t num_values, const vector<int>& rep_lvls, const vector<int>& def_lvls, void* buf) {
     if (num_values == 0)
       return 0;
     int64_t id = *(int64_t*)buf;
