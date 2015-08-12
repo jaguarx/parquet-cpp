@@ -2,6 +2,7 @@
 #include <parquet/parquet.h>
 #include <parquet/record_filter.h>
 #include <iostream>
+#include <iomanip>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -20,6 +21,44 @@ ostream& operator<<(ostream& oss, const Int96& v){
   oss << hex << v.i[0];
   oss << hex << v.i[1];
   oss << hex << v.i[2];
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, FieldRepetitionType::type t) {
+  switch(t){
+  case FieldRepetitionType::REQUIRED: oss << "required"; break;
+  case FieldRepetitionType::OPTIONAL: oss << "optional"; break;
+  case FieldRepetitionType::REPEATED: oss << "repeated"; break;
+  }
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, parquet::Type::type t) {
+  switch(t){
+  case parquet::Type::BOOLEAN: oss << "boolean"; break;
+  case parquet::Type::INT32: oss << "int32"; break;
+  case parquet::Type::INT64: oss << "int64"; break;
+  case parquet::Type::INT96: oss << "int96"; break;
+  case parquet::Type::FLOAT: oss << "float"; break;
+  case parquet::Type::DOUBLE: oss << "double"; break;
+  case parquet::Type::BYTE_ARRAY: oss << "byte_array"; break;
+  case parquet::Type::FIXED_LEN_BYTE_ARRAY: oss << "fixed_len_byte_array"; break;
+  }
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, parquet::Encoding::type t) {
+  switch(t) {
+  case parquet::Encoding::PLAIN: oss << "plain"; break;
+  case parquet::Encoding::PLAIN_DICTIONARY: oss << "plain-dictionary"; break;
+  case parquet::Encoding::RLE: oss << "rle"; break;
+  case parquet::Encoding::BIT_PACKED: oss << "bit-packed"; break;
+  case parquet::Encoding::DELTA_BINARY_PACKED: oss << "delta-bin-packed"; break;
+  case parquet::Encoding::DELTA_LENGTH_BYTE_ARRAY: oss << "delta-len-byte-array"; break;
+  case parquet::Encoding::DELTA_BYTE_ARRAY: oss << "delta-byte-array"; break;
+  case parquet::Encoding::RLE_DICTIONARY: oss << "rle-dictionary"; break;
+  default: oss << "unknown-encoding(" << (int) t << ")";
+  }
   return oss;
 }
 
@@ -76,7 +115,7 @@ struct equal_int64 {
   int64_t v_;
   equal_int64 (int64_t v): v_(v){}
 
-  int operator()(size_t num_values, const vector<int>& rep_lvls, const vector<int>& def_lvls, void* buf) {
+  int operator()(size_t num_values, void* buf) {
     if (num_values == 0)
       return 0;
     int64_t id = *(int64_t*)buf;
@@ -167,22 +206,32 @@ int _show_schema(int argc, char** argv) {
       cout << argv[i] << "\n";
     SchemaHelper h(argv[i]);
     list<int> child_stack;
-    for (int col_idx = 0; col_idx < h.schema.size(); ++col_idx) {
+    cout << "message " << h.schema[0].name << " {\n";
+    for (int col_idx = 1; col_idx < h.schema.size(); ++col_idx) {
       const SchemaElement& element = h.schema[col_idx];
-      cout << " " << col_idx << " : " 
-           << _FieldRepetitionType_VALUES_TO_NAMES.find(element.repetition_type)->second << " ";
       for (int j=0; j<child_stack.size(); ++j) cout << "  ";
+      cout << element.repetition_type << " ";
       cout << element.name << "\t";
       if (element.num_children == 0) {
         child_stack.front() --;
-        if (child_stack.front() == 0)
-          child_stack.pop_front();
-        cout << _Type_VALUES_TO_NAMES.find(element.type)->second;
+        cout<< element.type << " "
+            << element.name << "; /*"
+            << col_idx << "*/\n";
+        if (child_stack.front() == 0) {
+          do {
+            child_stack.pop_front();
+            for (int j=0; j<child_stack.size(); ++j) cout << "  ";
+            cout << "}\n";
+            if (!child_stack.empty())
+              child_stack.front()--;
+          } while (!child_stack.empty() && child_stack.front() == 0);
+        }
       } else {
+        cout << "group " << element.name << " {\n";
         child_stack.push_front(element.num_children);
       }
-      cout << "\n";
     }
+    cout << "}\n";
   }
   return 0;
 }

@@ -387,7 +387,7 @@ public:
 
   template<typename F>
   int applyFilter(F f){
-    int r = f(num_values_, rep_lvls_, def_lvls_, (void*)&val_buff_[0]);
+    int r = f(num_values_, (void*)&val_buff_[0]);
     return r;
   }
 
