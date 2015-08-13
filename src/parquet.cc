@@ -197,25 +197,26 @@ bool ColumnReader::ReadNewPage() {
 
       // repetition levels
       if (max_repetition_level_ > 0) {
+        int num_repetition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_repetition_level_);
-/*        buffer += sizeof(uint32_t);
+        buffer += sizeof(uint32_t);
         repetition_level_decoder_.reset(
             new impala::RleDecoder(buffer, num_repetition_bytes, bitwidth));
         buffer += num_repetition_bytes;
         uncompressed_len -= sizeof(uint32_t);
-        uncompressed_len -= num_repetition_bytes; */
+        uncompressed_len -= num_repetition_bytes;
       }
 
       // definition levels.
       if (max_definition_level_ > 0) {
-/*        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
+        int num_definition_bytes = *reinterpret_cast<const uint32_t*>(buffer);
         int bitwidth = BitUtil::NumRequiredBits(max_definition_level_);
         buffer += sizeof(uint32_t);
         definition_level_decoder_.reset(
             new impala::RleDecoder(buffer, num_definition_bytes, bitwidth));
         buffer += num_definition_bytes;
         uncompressed_len -= sizeof(uint32_t);
-        uncompressed_len -= num_definition_bytes; */
+        uncompressed_len -= num_definition_bytes;
       }
 
       // Get a decoder object for this page or create a new decoder if this is the

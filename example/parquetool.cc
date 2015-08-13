@@ -206,27 +206,29 @@ int _show_schema(int argc, char** argv) {
       cout << argv[i] << "\n";
     SchemaHelper h(argv[i]);
     list<int> child_stack;
+    child_stack.push_front(0);
     cout << "message " << h.schema[0].name << " {\n";
     for (int col_idx = 1; col_idx < h.schema.size(); ++col_idx) {
       const SchemaElement& element = h.schema[col_idx];
-      for (int j=0; j<=child_stack.size(); ++j) cout << "  ";
+      for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
       cout << element.repetition_type << " ";
       if (element.num_children == 0) {
         child_stack.front() --;
         cout<< element.type << " "
             << element.name << "; /*"
             << col_idx << "*/\n";
+         
         if (child_stack.front() == 0) {
           do {
             child_stack.pop_front();
-            for (int j=0; j<=child_stack.size(); ++j) cout << "  ";
+            for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
             cout << "}\n";
             if (!child_stack.empty())
               child_stack.front()--;
           } while (!child_stack.empty() && child_stack.front() == 0);
         }
       } else {
-        cout << "group " << element.name << " {\n";
+        cout << "group " /*<< element.name*/ << " {\n";
         child_stack.push_front(element.num_children);
       }
     }
