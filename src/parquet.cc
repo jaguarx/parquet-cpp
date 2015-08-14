@@ -356,6 +356,44 @@ bool ColumnReader::ReadNewPage() {
   return true;
 }
 
+template<> 
+int ColumnReader::DecodeValues(bool* val, vector<uint8_t>& buf, int count) {
+  return current_decoder_->GetBool(val, count);
+}
+
+template<> 
+int ColumnReader::DecodeValues(int32_t* val, vector<uint8_t>&, int count) {
+  return current_decoder_->GetInt32(val, count);
+}
+
+template<>
+int ColumnReader::DecodeValues(int64_t* val, vector<uint8_t>&, int count) {
+  return current_decoder_->GetInt64(val, count);
+}
+
+template<> 
+int ColumnReader::DecodeValues(float* val, vector<uint8_t>&, int count) {
+  return current_decoder_->GetFloat(val, count);
+}
+
+template<>
+int ColumnReader::DecodeValues(double* val, vector<uint8_t>&, int count) {
+  return current_decoder_->GetDouble(val, count);
+}
+
+template<>
+int ColumnReader::DecodeValues(ByteArray* val, vector<uint8_t>& buf, int count) {
+  count = current_decoder_->GetByteArray(val, count);
+  size_t pos = buf.size();
+  size_t buf_size = 0;
+  for (int i=0; i<count; ++i)
+    buf_size += val[i].len;
+  buf.resize(buf.size() + buf_size);
+  for (int i=0; i<count; ++i)
+    memcpy(&buf[pos], val[i].ptr, val[i].len);
+  return count;
+}
+
 bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
   *def_level = nextDefinitionLevel();
   *rep_level = nextRepetitionLevel();

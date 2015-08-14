@@ -199,19 +199,28 @@ class ColumnReader;
 template<typename T>
 class ValueBatch {
  public:
-  ValueBatch(int max_def_level) : max_def_level_(max_def_level) {}
+  ValueBatch() : max_def_level_(0) {}
   bool isNull(int index) {
     int def_level = def_levels_[index];
     return def_level < max_def_level_;
   }
-  T get(int index) { return values_[index]; }
-
+  T& operator[](int idx) {
+    T* base = reinterpret_cast<T*>(&values_[0]);
+    return base[idx];
+  }
+  T get(int index) {
+    T* base = reinterpret_cast<T*>(&values_[0]);
+    return base[index];
+  }
+  void resize(int count) {
+    values_.resize( (count+1) * sizeof(T)/sizeof(uint32_t) );
+  }
  private:
   friend class ColumnReader;
   int max_def_level_;
-  std::vector<T> values_;
-  std::vector<uint32_t> rep_levels_;
-  std::vector<uint32_t> def_levels_;
+  std::vector<uint32_t> values_;
+  std::vector<int32_t> rep_levels_;
+  std::vector<int32_t> def_levels_;
   std::vector<uint8_t> buffer_;
 };
 
@@ -247,21 +256,13 @@ class ColumnReader {
   double GetDouble(int* definition_level, int* repetition_level);
   ByteArray GetByteArray(int* definition_level, int* repetition_level);
 
-  int GetInt32Batch(ValueBatch<int32_t>& batch, int max_values);
-  int GetInt64Batch(ValueBatch<int64_t>& batch, int max_values);
-  int GetByteArrayBatch(ValueBatch<ByteArray>& batch, int max_values);
+  // Batch interface
+  template<typename T> int GetValueBatch(ValueBatch<T>& batch, int max_values);
+  template<typename T> int DecodeValues(T* values, std::vector<uint8_t>& buf, int max_values);
 
   // skip values
   int skipValue(int count);
-  // skip to defnition level of zero
   int skipCurrentRecord();
-
-  bool boolValue();
-  int32_t int32Value();
-  int64_t int64Value();
-  float floatValue();
-  double doubleValue();
-  ByteArray byteArrayValue();
 
   int nextDefinitionLevel();
   int peekRepetitionLevel();
@@ -541,28 +542,54 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
   return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
 }
 
-inline bool ColumnReader::boolValue() {
-  return reinterpret_cast<bool*>(&values_buffer_[0])[buffered_values_offset_];
-}
+template<typename T>
+int ColumnReader::GetValueBatch(ValueBatch<T>& batch, int max_values) {
+  batch.max_def_level_ = max_definition_level_;
+  batch.rep_levels_.resize(max_values);
+  batch.def_levels_.resize(max_values);
+  batch.resize(max_values);
 
-inline int32_t ColumnReader::int32Value() {
-  return reinterpret_cast<int32_t*>(&values_buffer_[0])[buffered_values_offset_];
-}
+  int def_values = 0;
+  int num_nonnulls = 0;
 
-inline int64_t ColumnReader::int64Value() {
-  return reinterpret_cast<int64_t*>(&values_buffer_[0])[buffered_values_offset_];
-}
-
-inline float ColumnReader::floatValue() {
-  return reinterpret_cast<float*>(&values_buffer_[0])[buffered_values_offset_];
-}
-
-inline double ColumnReader::doubleValue() {
-  return reinterpret_cast<double*>(&values_buffer_[0])[buffered_values_offset_];
-}
-
-inline ByteArray ColumnReader::byteArrayValue() {
-  return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_];
+  if (max_definition_level_ > 0) {
+    int num_nulls = 0;
+    int state = 0, start_p = 0;
+    for (int i=0; i<max_values; ++i) {
+      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
+        break;
+      def_values ++;
+      bool is_null = batch.def_levels_[i] < max_definition_level_;
+      if (is_null) num_nulls ++;
+      switch (state) {
+      case 0:
+        if (is_null) state = 2; 
+        else { state = 1; start_p = i; }
+        break;
+      case 1:
+        if (is_null) {
+          DecodeValues(&batch[start_p], batch.buffer_, i - start_p);
+          state = 2;
+        } break;
+      case 2:
+        if (!is_null) { state = 1; start_p = i; }
+      }
+    }
+    if ( state == 1 )
+      DecodeValues(&batch[start_p], batch.buffer_, def_values - start_p);
+  } else {
+    def_values = max_values;
+    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * def_values);
+    def_values = DecodeValues(&batch[0], batch.buffer_, max_values);
+  }
+  int rep_values = def_values;
+  if (repetition_level_decoder_) {
+    rep_values = decodeRepetitionLevels(batch.rep_levels_, rep_values);
+  } else {
+    rep_values = max_values;
+    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * rep_values);
+  }
+  return def_values;
 }
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain

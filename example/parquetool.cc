@@ -43,6 +43,7 @@ ostream& operator<<(ostream& oss, parquet::Type::type t) {
   case parquet::Type::DOUBLE: oss << "double"; break;
   case parquet::Type::BYTE_ARRAY: oss << "byte_array"; break;
   case parquet::Type::FIXED_LEN_BYTE_ARRAY: oss << "fixed_len_byte_array"; break;
+  default: oss << "unknown-type(" << (int) t << ")";
   }
   return oss;
 }
@@ -237,6 +238,21 @@ int _show_schema(int argc, char** argv) {
   return 0;
 }
 
+template<typename T>
+void _batch_dump(ColumnReader& reader, int batch_size) {
+  if (!reader.HasNext())
+    return;
+  ValueBatch<T> batch;
+  int v = 0;
+  do {
+    v = reader.GetValueBatch(batch, batch_size);
+    for (int i=0; i<v; ++i) {
+      if (batch.isNull(i)) cout << "NULL\n";
+      else cout << batch.get(i) << "\n";
+    }
+  } while (v == batch_size);
+}
+
 int _dump_columns(int argc, char** argv) {
   int opt;
   int col_idx = 1;
@@ -251,20 +267,21 @@ int _dump_columns(int argc, char** argv) {
   vector<uint8_t> buf;
   ColumnChunkGenerator gen(argv[optind], col_idx);
   boost::shared_ptr<ColumnReader> reader;
+
+  int count = 128;
   while (gen.next(reader)) {
-    int64_t num_values = gen.columnMetaData().num_values;
-    reader->HasNext();
-    int batch_size = std::min(4096, (int)num_values);
-    while (batch_size > 0) {
-      vector<int32_t> def_lvls;
-      batch_size = reader->decodeValues(buf, def_lvls, batch_size);
-      if (batch_size > 0) {
-        num_values -= batch_size;
-        dump_values(cout, gen.schemaElement(), &buf[0],
-                    &def_lvls[0],
-                    reader->MaxDefinitionLevel(), batch_size);
-        batch_size = std::min(4096, (int)num_values);
-      }
+    const ColumnMetaData& cmd = gen.columnMetaData();
+    switch (cmd.type) {
+    //case parquet::Type::BOOLEAN: _batch_dump<bool>(*reader, count); break;
+    case parquet::Type::INT32: _batch_dump<int32_t>(*reader, count); break;
+    case parquet::Type::INT64: _batch_dump<int64_t>(*reader, count); break;
+    //case parquet::Type::INT96:
+    case parquet::Type::FLOAT: _batch_dump<float>(*reader, count); break;
+    case parquet::Type::DOUBLE: _batch_dump<double>(*reader, count); break;
+    case parquet::Type::BYTE_ARRAY: _batch_dump<ByteArray>(*reader, count); break;
+    //case parquet::Type::FIXED_LENGTH_BYTE_ARRAY:
+    default:
+      cerr << "batch dump doesn't support type " << cmd.type << " yet\n";
     }
   }
   return 0;
