@@ -194,6 +194,27 @@ private:
   std::vector<std::vector<edge_t> > _edges;
 };
 
+class ColumnReader;
+
+template<typename T>
+class ValueBatch {
+ public:
+  ValueBatch(int max_def_level) : max_def_level_(max_def_level) {}
+  bool isNull(int index) {
+    int def_level = def_levels_[index];
+    return def_level < max_def_level_;
+  }
+  T get(int index) { return values_[index]; }
+
+ private:
+  friend class ColumnReader;
+  int max_def_level_;
+  std::vector<T> values_;
+  std::vector<uint32_t> rep_levels_;
+  std::vector<uint32_t> def_levels_;
+  std::vector<uint8_t> buffer_;
+};
+
 // API to read values from a single column. This is the main client facing API.
 class ColumnReader {
  public:
@@ -225,6 +246,10 @@ class ColumnReader {
   float GetFloat(int* definition_level, int* repetition_level);
   double GetDouble(int* definition_level, int* repetition_level);
   ByteArray GetByteArray(int* definition_level, int* repetition_level);
+
+  int GetInt32Batch(ValueBatch<int32_t>& batch, int max_values);
+  int GetInt64Batch(ValueBatch<int64_t>& batch, int max_values);
+  int GetByteArrayBatch(ValueBatch<ByteArray>& batch, int max_values);
 
   // skip values
   int skipValue(int count);
