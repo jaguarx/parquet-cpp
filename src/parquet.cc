@@ -894,3 +894,54 @@ bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
 
 }
 
+ostream& operator<<(ostream& oss, const parquet_cpp::ByteArray& a) {
+  oss.write((const char*)a.ptr, a.len);
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, const parquet_cpp::Int96& v){ 
+  oss << hex << v.i[0];
+  oss << hex << v.i[1];
+  oss << hex << v.i[2];
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, FieldRepetitionType::type t) {
+  switch(t){
+  case FieldRepetitionType::REQUIRED: oss << "required"; break;
+  case FieldRepetitionType::OPTIONAL: oss << "optional"; break;
+  case FieldRepetitionType::REPEATED: oss << "repeated"; break;
+  }
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, parquet::Type::type t) {
+  switch(t){
+  case parquet::Type::BOOLEAN: oss << "boolean"; break;
+  case parquet::Type::INT32: oss << "int32"; break;
+  case parquet::Type::INT64: oss << "int64"; break;
+  case parquet::Type::INT96: oss << "int96"; break;
+  case parquet::Type::FLOAT: oss << "float"; break;
+  case parquet::Type::DOUBLE: oss << "double"; break;
+  case parquet::Type::BYTE_ARRAY: oss << "byte_array"; break;
+  case parquet::Type::FIXED_LEN_BYTE_ARRAY: oss << "fixed_len_byte_array"; break;
+  default: oss << "unknown-type(" << (int) t << ")";
+  }
+  return oss;
+}
+
+ostream& operator<<(ostream& oss, parquet::Encoding::type t) {
+  switch(t) {
+  case parquet::Encoding::PLAIN: oss << "plain"; break;
+  case parquet::Encoding::PLAIN_DICTIONARY: oss << "plain-dictionary"; break;
+  case parquet::Encoding::RLE: oss << "rle"; break;
+  case parquet::Encoding::BIT_PACKED: oss << "bit-packed"; break;
+  case parquet::Encoding::DELTA_BINARY_PACKED: oss << "delta-bin-packed"; break;
+  case parquet::Encoding::DELTA_LENGTH_BYTE_ARRAY: oss << "delta-len-byte-array"; break;
+  case parquet::Encoding::DELTA_BYTE_ARRAY: oss << "delta-byte-array"; break;
+  case parquet::Encoding::RLE_DICTIONARY: oss << "rle-dictionary"; break;
+  default: oss << "unknown-encoding(" << (int) t << ")";
+  }
+  return oss;
+}
+

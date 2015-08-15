@@ -38,7 +38,10 @@
 
 namespace parquet_cpp {
 
-bool GetFileMetadata(const std::string& path, parquet::FileMetaData* metadata);
+using std::vector;
+using std::string;
+
+bool GetFileMetadata(const string& path, parquet::FileMetaData* metadata);
 
 class Codec;
 class Decoder;
@@ -214,6 +217,7 @@ class ValueBatch {
   }
   void resize(int count) {
     values_.resize( (count+1) * sizeof(T)/sizeof(uint32_t) );
+    def_levels_.resize(count);
   }
  private:
   friend class ColumnReader;
@@ -258,7 +262,9 @@ class ColumnReader {
 
   // Batch interface
   template<typename T> int GetValueBatch(ValueBatch<T>& batch, int max_values);
-  template<typename T> int DecodeValues(T* values, std::vector<uint8_t>& buf, int max_values);
+  template<typename T> int GetRecordValueBatch(ValueBatch<T>& batch,
+    vector<int>& record_offsets, int num_records);
+  template<typename T> int DecodeValues(T* values, vector<uint8_t>& buf, int count);
 
   // skip values
   int skipValue(int count);
@@ -592,6 +598,54 @@ int ColumnReader::GetValueBatch(ValueBatch<T>& batch, int max_values) {
   return def_values;
 }
 
+template<typename T>
+int ColumnReader::GetRecordValueBatch(ValueBatch<T>& batch, 
+  vector<int>& record_offsets, int num_records)
+{
+  if (max_repetition_level_ > 0) {
+    vector<int32_t> buf;
+    buf.reserve(num_records);
+    record_offsets.reserve(num_records);
+    do {
+      int rep_val = 0;
+      if (!repetition_level_decoder_->Get(&rep_val)) break;
+      if (rep_val == 0) record_offsets.push_back((int32_t)buf.size());
+      buf.push_back(rep_val);
+    } while (record_offsets.size() < num_records);
+    batch.rep_levels_.swap(buf);
+  } else {
+    batch.rep_levels_.resize(num_records);
+    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * num_records);
+  }
+
+  int num_values = batch.rep_levels_.size();
+  batch.resize(num_values);
+
+  if (max_definition_level_ > 0) {
+    int state = 0, start_p = 0;
+    for (int i=0; i<num_values; ++i) {
+      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
+        break;
+      bool is_null = batch.def_levels_[i] < max_definition_level_;
+      switch (state) {
+      case 0: if (is_null) state = 2;
+              else { state = 1; start_p = i; } break;
+      case 1: if (is_null) {
+                DecodeValues(&batch[start_p], batch.buffer_, i - start_p);
+                state = 2;
+              } break;
+      case 2: if (!is_null) { state = 1; start_p = i; }
+      }   
+    }   
+    if ( state == 1 ) 
+      DecodeValues(&batch[start_p], batch.buffer_, num_values - start_p);
+  } else {
+    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
+    num_values = DecodeValues(&batch[0], batch.buffer_, num_values);
+  }
+  return num_values;
+}
+
 // Deserialize a thrift message from buf/len.  buf/len must at least contain
 // all the bytes needed to store the thrift message.  On return, len will be
 // set to the actual length of the header.
@@ -614,6 +668,12 @@ inline void DeserializeThriftMsg(const uint8_t* buf, uint32_t* len, T* deseriali
 }
 
 }
+
+std::ostream& operator<<(std::ostream& oss, parquet::FieldRepetitionType::type t);
+std::ostream& operator<<(std::ostream& oss, parquet::Type::type t);
+std::ostream& operator<<(std::ostream& oss, parquet::Encoding::type t);
+std::ostream& operator<<(std::ostream& oss, const parquet_cpp::Int96& v);
+std::ostream& operator<<(std::ostream& oss, const parquet_cpp::ByteArray& a);
 
 #endif
 
