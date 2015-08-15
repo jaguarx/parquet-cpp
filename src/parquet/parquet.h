@@ -602,6 +602,7 @@ template<typename T>
 int ColumnReader::GetRecordValueBatch(ValueBatch<T>& batch, 
   vector<int>& record_offsets, int num_records)
 {
+  int num_values = num_records;
   if (max_repetition_level_ > 0) {
     vector<int32_t> buf;
     buf.reserve(num_records);
@@ -612,20 +613,19 @@ int ColumnReader::GetRecordValueBatch(ValueBatch<T>& batch,
       if (rep_val == 0) record_offsets.push_back((int32_t)buf.size());
       buf.push_back(rep_val);
     } while (record_offsets.size() < num_records);
+    num_values = buf.size();
     batch.rep_levels_.swap(buf);
-  } else {
-    batch.rep_levels_.resize(num_records);
-    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * num_records);
   }
 
-  int num_values = batch.rep_levels_.size();
   batch.resize(num_values);
 
   if (max_definition_level_ > 0) {
     int state = 0, start_p = 0;
+    int values = 0;
     for (int i=0; i<num_values; ++i) {
       if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
         break;
+      values ++;
       bool is_null = batch.def_levels_[i] < max_definition_level_;
       switch (state) {
       case 0: if (is_null) state = 2;
@@ -636,12 +636,20 @@ int ColumnReader::GetRecordValueBatch(ValueBatch<T>& batch,
               } break;
       case 2: if (!is_null) { state = 1; start_p = i; }
       }   
-    }   
+    }
     if ( state == 1 ) 
-      DecodeValues(&batch[start_p], batch.buffer_, num_values - start_p);
+      DecodeValues(&batch[start_p], batch.buffer_, values - start_p);
+    num_values = values;
   } else {
     memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
     num_values = DecodeValues(&batch[0], batch.buffer_, num_values);
+  }
+  if (max_repetition_level_ == 0) {
+    batch.rep_levels_.resize(num_values);
+    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * num_values);
+    record_offsets.resize(num_values);
+    for (int i=0; i<num_values; ++i)
+      record_offsets[i] = i;
   }
   return num_values;
 }
