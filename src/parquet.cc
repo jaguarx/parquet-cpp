@@ -33,6 +33,19 @@ using impala::BitUtil;
 
 namespace parquet_cpp {
 
+inline size_t value_byte_size(Type::type t) {
+  switch (t) {
+  case parquet::Type::BOOLEAN: return 1;
+  case parquet::Type::INT32: return sizeof(int32_t);
+  case parquet::Type::INT64: return sizeof(int64_t);
+  case parquet::Type::FLOAT: return sizeof(float);
+  case parquet::Type::DOUBLE: return sizeof(double);
+  case parquet::Type::BYTE_ARRAY: return sizeof(ByteArray);
+  default:
+    ParquetException::NYI("Unsupported type");
+  }
+}
+
 InMemoryInputStream::InMemoryInputStream(const uint8_t* buffer, int64_t len) :
   buffer_(buffer), len_(len), offset_(0) {
 }
@@ -52,43 +65,24 @@ ColumnReader::~ColumnReader() {
 }
 
 ColumnReader::ColumnReader(const ColumnMetaData* metadata,
-    const SchemaElement* schema, InputStream* stream,
-    int max_repetition_level,
-    int max_definition_level)
+    //const SchemaElement* schema, 
+    InputStream* stream,
+    const ColumnDescriptor& desc)
+    //int max_repetition_level,
+    ///int max_definition_level)
   : metadata_(metadata),
-    schema_(schema),
+    column_(desc),
+    //schema_(schema),
     stream_(stream),
-    max_repetition_level_(max_repetition_level),
-    max_definition_level_(max_definition_level),
+    //max_repetition_level_(max_repetition_level),
+    //max_definition_level_(max_definition_level),
     current_decoder_(NULL),
     num_buffered_values_(0),
     num_decoded_values_(0),
     buffered_values_offset_(0),
     saved_rep_level_(-1) {
-  int value_byte_size;
-  switch (metadata->type) {
-    case parquet::Type::BOOLEAN:
-      value_byte_size = 1;
-      break;
-    case parquet::Type::INT32:
-      value_byte_size = sizeof(int32_t);
-      break;
-    case parquet::Type::INT64:
-      value_byte_size = sizeof(int64_t);
-      break;
-    case parquet::Type::FLOAT:
-      value_byte_size = sizeof(float);
-      break;
-    case parquet::Type::DOUBLE:
-      value_byte_size = sizeof(double);
-      break;
-    case parquet::Type::BYTE_ARRAY:
-      value_byte_size = sizeof(ByteArray);
-      break;
-    default:
-      ParquetException::NYI("Unsupported type");
-  }
-
+  max_repetition_level_ = column_.max_rep_level;
+  max_definition_level_ = column_.max_def_level;
   switch (metadata->codec) {
     case CompressionCodec::UNCOMPRESSED:
       break;
@@ -100,7 +94,7 @@ ColumnReader::ColumnReader(const ColumnMetaData* metadata,
   }
 
   config_ = Config::DefaultConfig();
-  values_buffer_.resize(config_.batch_size * value_byte_size);
+  values_buffer_.resize(config_.batch_size * value_byte_size(metadata->type));
 }
 
 void ColumnReader::BatchDecode() {
@@ -183,10 +177,10 @@ bool ColumnReader::ReadNewPage() {
         throw ParquetException("Column cannot have more than one dictionary.");
       }
 
-      PlainDecoder dictionary(schema_->type);
+      PlainDecoder dictionary(column_.element.type);
       dictionary.SetData(current_page_header_.dictionary_page_header.num_values,
           buffer, uncompressed_len);
-      shared_ptr<Decoder> decoder(new DictionaryDecoder(schema_->type, &dictionary));
+      shared_ptr<Decoder> decoder(new DictionaryDecoder(column_.element.type, &dictionary));
       decoders_[Encoding::RLE_DICTIONARY] = decoder;
       current_decoder_ = decoders_[Encoding::RLE_DICTIONARY].get();
       continue;
@@ -232,10 +226,10 @@ bool ColumnReader::ReadNewPage() {
         shared_ptr<Decoder> decoder;
         switch (encoding) {
           case Encoding::PLAIN: {
-            if (schema_->type == Type::BOOLEAN) {
+            if (column_.element.type == Type::BOOLEAN) {
               decoder.reset(new BoolDecoder());
             } else {
-              decoder.reset(new PlainDecoder(schema_->type));
+              decoder.reset(new PlainDecoder(column_.element.type));
             }
             decoders_[encoding] = decoder;
             current_decoder_ = decoder.get();
@@ -245,7 +239,7 @@ bool ColumnReader::ReadNewPage() {
             throw ParquetException("Dictionary page must be before data page.");
 
           case Encoding::DELTA_BINARY_PACKED: {
-            decoder.reset(new DeltaBitPackDecoder(schema_->type));
+            decoder.reset(new DeltaBitPackDecoder(column_.element.type));
             decoders_[encoding] = decoder;
             current_decoder_ = decoder.get();
             break;
@@ -315,10 +309,10 @@ bool ColumnReader::ReadNewPage() {
         shared_ptr<Decoder> decoder;
         switch (encoding) {
           case Encoding::PLAIN: {
-            if (schema_->type == Type::BOOLEAN) {
+            if (column_.element.type == Type::BOOLEAN) {
               decoder.reset(new BoolDecoder());
             } else {
-              decoder.reset(new PlainDecoder(schema_->type));
+              decoder.reset(new PlainDecoder(column_.element.type));
             }
             decoders_[encoding] = decoder;
             current_decoder_ = decoder.get();
@@ -328,7 +322,7 @@ bool ColumnReader::ReadNewPage() {
             throw ParquetException("Dictionary page must be before data page.");
 
           case Encoding::DELTA_BINARY_PACKED: {
-            decoder.reset(new DeltaBitPackDecoder(schema_->type));
+            decoder.reset(new DeltaBitPackDecoder(column_.element.type));
             decoders_[encoding] = decoder;
             current_decoder_ = decoder.get();
             break;
@@ -356,42 +350,28 @@ bool ColumnReader::ReadNewPage() {
   return true;
 }
 
-template<> 
-int ColumnReader::DecodeValues(bool* val, vector<uint8_t>& buf, int count) {
-  return current_decoder_->GetBool(val, count);
-}
-
-template<> 
-int ColumnReader::DecodeValues(int32_t* val, vector<uint8_t>&, int count) {
-  return current_decoder_->GetInt32(val, count);
-}
-
-template<>
-int ColumnReader::DecodeValues(int64_t* val, vector<uint8_t>&, int count) {
-  return current_decoder_->GetInt64(val, count);
-}
-
-template<> 
-int ColumnReader::DecodeValues(float* val, vector<uint8_t>&, int count) {
-  return current_decoder_->GetFloat(val, count);
-}
-
-template<>
-int ColumnReader::DecodeValues(double* val, vector<uint8_t>&, int count) {
-  return current_decoder_->GetDouble(val, count);
-}
-
-template<>
-int ColumnReader::DecodeValues(ByteArray* val, vector<uint8_t>& buf, int count) {
-  count = current_decoder_->GetByteArray(val, count);
-  size_t pos = buf.size();
-  size_t buf_size = 0;
-  for (int i=0; i<count; ++i)
-    buf_size += val[i].len;
-  buf.resize(buf.size() + buf_size);
-  for (int i=0; i<count; ++i)
-    memcpy(&buf[pos], val[i].ptr, val[i].len);
-  return count;
+int ColumnReader::DecodeValues(uint8_t* val_, vector<uint8_t>& buf, int count) {
+  switch (column_.element.type) {
+  case Type::BOOLEAN: return current_decoder_->GetBool((bool*)val_, count);
+  case Type::INT32: return current_decoder_->GetInt32((int32_t*)val_, count);
+  case Type::INT64: return current_decoder_->GetInt64((int64_t*)val_, count);
+  case Type::DOUBLE: return current_decoder_->GetDouble((double*)val_, count);
+  case Type::BYTE_ARRAY: {
+    ByteArray* val = (ByteArray*)val_;
+    count = current_decoder_->GetByteArray(val, count);
+    size_t pos = buf.size();
+    size_t buf_size = 0;
+    for (int i=0; i<count; ++i)
+      buf_size += val[i].len;
+    buf.resize(buf.size() + buf_size);
+    for (int i=0; i<count; ++i)
+      memcpy(&buf[pos], val[i].ptr, val[i].len);
+    return count;
+  }
+  default:
+    ParquetException::NYI("Unsupported type");
+  }
+  return -1;
 }
 
 bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
@@ -575,18 +555,144 @@ int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
   return values;
 }
 
+int ColumnReader::GetValueBatch(ValueBatch& batch, int max_values) {
+  batch.max_def_level_ = max_definition_level_;
+  batch.rep_levels_.resize(max_values);
+  batch.def_levels_.resize(max_values);
+  batch.resize(max_values);
+
+  int def_values = 0;
+  int num_nonnulls = 0;
+
+  if (max_definition_level_ > 0) {
+    int num_nulls = 0;
+    int state = 0, start_p = 0;
+    for (int i=0; i<max_values; ++i) {
+      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
+        break;
+      def_values ++;
+      bool is_null = batch.def_levels_[i] < max_definition_level_;
+      if (is_null) num_nulls ++;
+      switch (state) {
+      case 0:
+        if (is_null) state = 2;
+        else { state = 1; start_p = i; }
+        break;
+      case 1:
+        if (is_null) {
+          DecodeValues(batch.valueAddress(start_p), batch.buffer_, i - start_p);
+          state = 2;
+        } break;
+      case 2:
+        if (!is_null) { state = 1; start_p = i; }
+      }
+    }
+    if ( state == 1 )
+      DecodeValues(batch.valueAddress(start_p), batch.buffer_, def_values - start_p);
+  } else {
+    def_values = max_values;
+    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * def_values);
+    def_values = DecodeValues(batch.valueAddress(0), batch.buffer_, max_values);
+  }
+  int rep_values = def_values;
+  if (repetition_level_decoder_) {
+    rep_values = decodeRepetitionLevels(batch.rep_levels_, rep_values);
+  } else {
+    rep_values = max_values;
+    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * rep_values);
+  }
+  return def_values;
+}
+int ColumnReader::GetRecordValueBatch(ValueBatch& batch, 
+  vector<int>& record_offsets, int num_records)
+{
+  int num_values = num_records;
+  if (max_repetition_level_ > 0) {
+    vector<int32_t> buf;
+    buf.reserve(num_records);
+    record_offsets.reserve(num_records);
+    do {
+      int rep_val = 0;
+      if (!repetition_level_decoder_->Get(&rep_val)) break;
+      if (rep_val == 0) record_offsets.push_back((int32_t)buf.size());
+      buf.push_back(rep_val);
+    } while (record_offsets.size() < num_records);
+    num_values = buf.size();
+    batch.rep_levels_.swap(buf);
+  }
+
+  batch.resize(num_values);
+
+  if (max_definition_level_ > 0) {
+    int state = 0, start_p = 0;
+    int values = 0;
+    for (int i=0; i<num_values; ++i) {
+      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
+        break;
+      values ++; 
+      bool is_null = batch.def_levels_[i] < max_definition_level_;
+      switch (state) {
+      case 0: if (is_null) state = 2;
+              else { state = 1; start_p = i; } break;
+      case 1: if (is_null) {
+                DecodeValues(batch.valueAddress(start_p), batch.buffer_, i - start_p);
+                state = 2;
+              } break;
+      case 2: if (!is_null) { state = 1; start_p = i; }
+      }
+    }
+    if ( state == 1 )
+      DecodeValues(batch.valueAddress(start_p), batch.buffer_, values - start_p);
+    num_values = values;
+  } else {
+    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
+    num_values = DecodeValues(batch.valueAddress(0), batch.buffer_, num_values);
+  }
+  if (max_repetition_level_ == 0) {
+    batch.rep_levels_.resize(num_values);
+    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * num_values);
+    record_offsets.resize(num_values);
+    for (int i=0; i<num_values; ++i)
+      record_offsets[i] = i;
+  }
+  return num_values;
+}
+
+void ValueBatch::BindDescriptor(ColumnDescriptor& desc) {
+  value_byte_size_ = value_byte_size(desc.element.type);
+  max_def_level_ = desc.max_def_level;
+}
+
+
 SchemaHelper::SchemaHelper(const string& file_path) {
   parquet::FileMetaData metadata;
   if (!GetFileMetadata(file_path, &metadata))
     throw ParquetException("unable to open file");
-  schema = metadata.schema;
+  //schema = metadata.schema;
+  columns.resize(metadata.schema.size());
+  for (int i=0; i<metadata.schema.size(); ++i)
+    columns[i].element = metadata.schema[i];
   init_();
+}
+
+SchemaHelper::SchemaHelper(vector<parquet::SchemaElement>& _schema) {
+  columns.resize(_schema.size());
+  for (int i=0; i<_schema.size(); ++i)
+    columns[i].element = _schema[i];
+  init_();
+}
+
+void SchemaHelper::init_() {
+  _child_to_parent.resize(columns.size());
+  _parent_to_child.resize(columns.size());
+  _element_paths.resize(columns.size());
+  _rebuild_tree(ROOT_NODE, 0, 0, "");
 }
 
 int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, 
   const string& path)
 {
-  const SchemaElement&  parent = schema[fid];
+  const SchemaElement&  parent = columns[fid].element;
   string& fullpath = _element_paths[fid];
   if (fid != ROOT_NODE) {
     if (parent.repetition_type == FieldRepetitionType::REPEATED)
@@ -600,8 +706,8 @@ int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level,
     fullpath.append(parent.name);
     _path_to_id[fullpath] = fid;
   }
-  _max_repetition_levels[fid] = rep_level;
-  _max_definition_levels[fid] = def_level;
+  columns[fid].max_def_level = def_level;
+  columns[fid].max_rep_level = rep_level;
   if (!parent.__isset.num_children)
     return 1;
 
@@ -620,8 +726,8 @@ int SchemaHelper::_build_child_fsm(int fid){
   const vector<int>& child_ids = _parent_to_child[fid];
   for (int i=0; i<child_ids.size(); ++i) {
     int cid = child_ids[i];
-    SchemaElement& element = schema[cid];
-    int rep_level = _max_repetition_levels[cid];
+    SchemaElement& element = columns[cid].element;
+    int rep_level = columns[cid].max_rep_level;
 
     vector<edge_t>& subedges = _edges[cid];
     subedges.resize(rep_level+1);
@@ -643,8 +749,8 @@ int SchemaHelper::_build_child_fsm(int fid){
 }
 
 void SchemaHelper::BuildFullFSM() {
-  if (_edges.size() != schema.size()) {
-    _edges.resize(schema.size());
+  if (_edges.size() != columns.size()) {
+    _edges.resize(columns.size());
     _build_child_fsm(ROOT_NODE);
   }
 }
@@ -653,8 +759,8 @@ void SchemaHelper::BuildFSM(const vector<string>& fields, SchemaFSM& fsm) {
   BuildFullFSM();
   vector<int> fids;
   if (fields.size() == 0) {
-    for (int i=0; i < schema.size(); ++i) {
-      SchemaElement& element = schema[i];
+    for (int i=0; i < columns.size(); ++i) {
+      SchemaElement& element = columns[i].element;
       if (!element.__isset.num_children)
         fids.push_back(i);
     }
@@ -667,7 +773,7 @@ void SchemaHelper::BuildFSM(const vector<string>& fields, SchemaFSM& fsm) {
     }
     sort(fids.begin(), fids.end());
   }
-  vector<vector<int> > all_edges(schema.size());
+  vector<vector<int> > all_edges(columns.size());
   for (int i = 0; i < fids.size(); ++i) {
     int id = fids[i];
     int rep_lvl = GetMaxRepetitionLevel(id);
@@ -690,8 +796,8 @@ int SchemaHelper::_follow_fsm(int field_id, int rep_lvl) {
   if (ts.type == FOLLOW)
     return _follow_fsm(ts_id, rep_lvl);
   else {
-    SchemaElement& element = schema[ts_id];
-    while (schema[ts_id].__isset.num_children) {
+    //SchemaElement& element = columns[ts_id];
+    while (columns[ts_id].element.__isset.num_children) {
       ts_id = ts_id + 1;
     }
     return ts_id;
@@ -724,70 +830,7 @@ void SchemaFSM::dump(ostream& oss) const {
   }
 }
 
-void ColumnValueChunk::scanRecordBoundary() {
-  rep_lvl_pos_ = 0;
-  def_lvl_pos_ = 0;
-  val_buf_pos_ = 0;
-  num_values_ = 0;
-
-  int rep_lvl = reader_->nextRepetitionLevel();
-  rep_lvls_.push_back(rep_lvl);
-  num_values_ = 1;
-  do {
-    rep_lvl = reader_->peekRepetitionLevel();
-    if (rep_lvl > 0) {
-      num_values_ ++;
-      reader_->nextRepetitionLevel();
-      rep_lvls_.push_back(rep_lvl);
-    }
-  } while (rep_lvl > 0);
-  rep_lvls_.push_back(0); //add a terminating 0
-  reader_->decodeValues(val_buff_, def_lvls_, num_values_);
-  value_loaded_ = true;
-}
-
-int RecordAssembler::assemble() {
-  int entry_state = fsm_.GetEntryState();
-  ColumnValueChunk& ch = fac_.GetChunk(entry_state);
-  if (!ch.HasNext())
-    return 0;
-
-  // apply filers
-  bool skip_record = fac_.applyFilter();
-
-  int fid = entry_state;
-  while (fid != ROOT_NODE) {
-    ColumnValueChunk& ch = fac_.GetChunk(fid);
-    if (!ch.valueLoaded())
-      ch.scanRecordBoundary();
-    if (skip_record) {
-      ch.clearBuffer();
-    } else {
-      ch.resetBufferPos();
-      ch.nextRepetitionLevel();
-    }
-    fid = fsm_.GetNextState(fid, 0);
-  }
-  if (skip_record)
-    return 1;
-
-  fid = entry_state;
-  while ( fid != ROOT_NODE ) {
-    ColumnValueChunk& ch = fac_.GetChunk(fid);
-    fac_.consumeValueChunk(fid, ch);
-    int rep_lvl = ch.nextRepetitionLevel();
-    int nfid = fsm_.GetNextState(fid, rep_lvl);
-    fid = nfid;
-  }
-  fid = entry_state;
-  while (fid != ROOT_NODE) {
-    ColumnValueChunk& ch = fac_.GetChunk(fid);
-    ch.clearBuffer();
-    fid = fsm_.GetNextState(fid, 0);
-  }
-  return 1;
-}
-
+/*
 ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string& col_path):
   file_path_(file_path), row_group_idx_(0), col_path_(col_path)
 {
@@ -801,21 +844,78 @@ ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string
   max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
   max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
 }
-
-ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, int col_idx):
-  file_path_(file_path), row_group_idx_(0)
+*/
+ParquetFileReader::ParquetFileReader(const string& path)
+ : file_path_(path) 
 {
+  if (!GetFileMetadata(file_path_, &metadata_))
+    throw ParquetException("unable to open file");
+
+  readers_.resize(metadata_.schema.size());
+  chunk_generators_.resize(metadata_.schema.size());
+  values_.resize(metadata_.schema.size());
+  helper_.reset(new SchemaHelper(metadata_.schema));
+}
+
+const ColumnDescriptor& 
+ParquetFileReader::GetColumnDescriptor(int column_id) {
+  return helper_->columns[column_id];
+}
+
+ValueBatch& ParquetFileReader::GetColumnValues(int column_id) {
+  return values_[column_id];
+}
+
+int ParquetFileReader::LoadColumnData(int fid, int num_records) {
+  if (readers_[fid].get() == NULL) {
+    chunk_generators_[fid].reset(new ColumnChunkGenerator(file_path_, metadata_, 
+      *helper_));
+    chunk_generators_[fid]->selectColumn(fid);
+    if (!chunk_generators_[fid]->next(readers_[fid])) 
+      return 0;
+    if (!readers_[fid]->HasNext())
+      return 0;
+  }
+  int records_remains = num_records;
+  int values = 0;
+  vector<int> offsets;
+  const ColumnDescriptor& desc = helper_->columns[fid];
+  ColumnReader& reader = *readers_[fid];
+  do {
+    values += reader.GetRecordValueBatch(values_[fid], offsets, records_remains);
+    if (offsets.size() == num_records) break;
+    if (!chunk_generators_[fid]->next(readers_[fid])) break;
+    records_remains = num_records - offsets.size();
+  } while (records_remains > 0);
+  return values;
+}
+
+/*
+ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path)
+ : file_path_(file_path), row_group_idx_(0) {
+  if (!GetFileMetadata(file_path_, &metadata_))
+    throw ParquetException("unable to open file");
+  
+} */
+
+ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, 
+  parquet::FileMetaData& fmd, SchemaHelper& helper):
+  file_path_(file_path), metadata_(fmd), helper_(helper), row_group_idx_(0)
+{
+/*
   if (!GetFileMetadata(file_path_, &metadata_))
     throw ParquetException("unable to open file");
   if (col_idx >= metadata_.schema.size())
     throw ParquetException("invalid column");
 
   helper_.reset(new SchemaHelper(metadata_.schema));
-  col_idx_ = col_idx;
-  max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
-  max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
-  col_path_ = helper_->GetElementPath(col_idx);
+*/
+  //col_idx_ = col_idx;
+  //max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
+  //max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
+  //col_path_ = helper_.GetElementPath(col_idx);
 }
+
 
 string build_path_name(const vector<string>& path_in_schema) {
   stringstream ss;
@@ -825,6 +925,11 @@ string build_path_name(const vector<string>& path_in_schema) {
     ss << path_in_schema[i];
   }
   return ss.str();
+}
+
+void ColumnChunkGenerator::selectColumn(int col_idx) {
+  col_idx_ = col_idx;
+  col_path_ = helper_.GetElementPath(col_idx);
 }
 
 bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
@@ -881,10 +986,15 @@ bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
     }
 
     column_metadata_ = col.meta_data;
-   
+    ColumnDescriptor& desc = helper_.columns[col_idx_];
+    //desc.element = metadata_.schema[col_idx_];
+    //desc.max_def_level = max_repetition_level_;
+    //desc.max_rep_level = max_definition_level_;
     col_chunk_ = col; 
-    reader.reset(new ColumnReader(&(col_chunk_.meta_data), &metadata_.schema[col_idx_],
-      input_.get(), max_repetition_level_, max_definition_level_));
+    reader.reset(new ColumnReader(&(col_chunk_.meta_data), 
+      //&metadata_.schema[col_idx_],
+      input_.get(), 
+      desc));//, max_repetition_level_, max_definition_level_));
     ++ row_group_idx_;
     return true;
   }
@@ -892,6 +1002,39 @@ bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
   return false;
 }
 
+void DumpSchema(ostream& oss, const vector<ColumnDescriptor>& columns) {
+  list<int> child_stack;
+  child_stack.push_front(0);
+  oss << "message " << columns[0].element.name << " {\n";
+  for (int col_idx = 1; col_idx < columns.size(); ++col_idx) {
+    const SchemaElement& element = columns[col_idx].element;
+
+    //indent
+    for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
+
+    oss << element.repetition_type << " ";
+    if (element.num_children == 0) {
+        child_stack.front() --; 
+        oss << element.type << " " 
+            << element.name << "; /*"
+            << col_idx << "*/\n";
+    
+        if (child_stack.front() == 0) {
+          do {
+            child_stack.pop_front();
+            for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
+            cout << "}\n";
+            if (!child_stack.empty())
+              child_stack.front()--;
+          } while (!child_stack.empty() && child_stack.front() == 0);
+        }
+      } else {
+        oss << "group " << element.name << " {\n";
+        child_stack.push_front(element.num_children);
+      }
+    }
+    oss << "}\n";
+  }
 }
 
 ostream& operator<<(ostream& oss, const parquet_cpp::ByteArray& a) {

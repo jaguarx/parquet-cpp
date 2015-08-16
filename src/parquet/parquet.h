@@ -42,7 +42,6 @@ using std::vector;
 using std::string;
 
 bool GetFileMetadata(const string& path, parquet::FileMetaData* metadata);
-
 class Codec;
 class Decoder;
 
@@ -123,11 +122,20 @@ struct edge_t{
   int type;
 };
 
+struct ColumnDescriptor {
+  parquet::SchemaElement element;
+  int max_def_level;
+  int max_rep_level;
+  ColumnDescriptor() : max_def_level(0), max_rep_level(0) {}
+};
+
+void DumpSchema(std::ostream&, const vector<ColumnDescriptor>&);
+
 class SchemaFSM {
 public:
   SchemaFSM() {}
 
-  void init(std::vector<std::vector<int> >& states) {
+  void init(vector<vector<int> >& states) {
     states_.swap(states);
   }
 
@@ -140,92 +148,82 @@ public:
 
   void dump(std::ostream& oss) const;
 private:
-  std::vector<std::vector<int> > states_;
+  vector<vector<int> > states_;
 };
 
 class SchemaHelper {
 public:
-  SchemaHelper (std::vector<parquet::SchemaElement>& _schema):schema(_schema){
-    init_();
-  }
+  SchemaHelper (vector<parquet::SchemaElement>& _schema);
   SchemaHelper(const std::string& file_path);
 
   int GetMaxDefinitionLevel(int col_idx) const {
-    return _max_definition_levels[col_idx];
-  }
+    return columns[col_idx].max_def_level; }
 
   int GetMaxRepetitionLevel(int col_idx) const{
-    return _max_repetition_levels[col_idx];
-  }
+    return columns[col_idx].max_rep_level; }
 
-  const std::string& GetElementPath(int col_idx) const {
+  const string& GetElementPath(int col_idx) const {
     return _element_paths[col_idx];
   }
 
   int GetElementId(const std::string& path) const {
-    std::map<std::string, int>::const_iterator i = _path_to_id.find(path);
+    std::map<string, int>::const_iterator i = _path_to_id.find(path);
     if (i == _path_to_id.end())
       return -1;
     return i->second;
   }
 
   void BuildFullFSM();
-  void BuildFSM(const std::vector<std::string>& fields, SchemaFSM& fsm);
+  void BuildFSM(const vector<string>& fields, SchemaFSM& fsm);
 
-  std::vector<parquet::SchemaElement> schema;
+  vector<ColumnDescriptor> columns;
 
 private:
-  void init_() {
-    _max_definition_levels.resize(schema.size());
-    _max_repetition_levels.resize(schema.size());
-    _child_to_parent.resize(schema.size());
-    _parent_to_child.resize(schema.size());
-    _element_paths.resize(schema.size());
-    _rebuild_tree(ROOT_NODE, 0, 0, "");
-  }
+  void init_();
   int _build_child_fsm(int fid);
-  int _rebuild_tree(int fid, int rep_level, int def_level, const std::string& path);
+  int _rebuild_tree(int fid, int rep_level, int def_level, const string& path);
   int _follow_fsm(int fid, int rep_lvl);
-  int _compress_state(int fid, int rep_lvl, const std::vector<int>& fields);
+  int _compress_state(int fid, int rep_lvl, const vector<int>& fields);
 
-  std::vector<int> _max_definition_levels;
-  std::vector<int> _max_repetition_levels;
-  std::vector<int> _child_to_parent;
-  std::vector<std::vector<int> > _parent_to_child;
-  std::vector<std::string> _element_paths;
-  std::map<std::string, int> _path_to_id;
-  std::vector<std::vector<edge_t> > _edges;
+  vector<int> _child_to_parent;
+  vector<vector<int> > _parent_to_child;
+  vector<string> _element_paths;
+  std::map<string, int> _path_to_id;
+  vector<vector<edge_t> > _edges;
 };
 
 class ColumnReader;
 
-template<typename T>
+//template<typename T>
 class ValueBatch {
  public:
-  ValueBatch() : max_def_level_(0) {}
+  ValueBatch() {}
+  void BindDescriptor(ColumnDescriptor& desc);
   bool isNull(int index) {
     int def_level = def_levels_[index];
     return def_level < max_def_level_;
   }
-  T& operator[](int idx) {
+  template<typename T>
+  T* get(int index) {
     T* base = reinterpret_cast<T*>(&values_[0]);
-    return base[idx];
+    return &base[index];
   }
-  T get(int index) {
-    T* base = reinterpret_cast<T*>(&values_[0]);
-    return base[index];
+  uint8_t* valueAddress(int offset) {
+    uint8_t* base = (uint8_t*)&values_[0];
+    return base + offset * value_byte_size_;
   }
-  void resize(int count) {
-    values_.resize( (count+1) * sizeof(T)/sizeof(uint32_t) );
-    def_levels_.resize(count);
+  void resize(int values) {
+    def_levels_.resize(values);
+    values_.resize(1+(values*value_byte_size_)/sizeof(uint32_t));
   }
  private:
   friend class ColumnReader;
   int max_def_level_;
-  std::vector<uint32_t> values_;
-  std::vector<int32_t> rep_levels_;
-  std::vector<int32_t> def_levels_;
-  std::vector<uint8_t> buffer_;
+  int value_byte_size_;
+  vector<uint32_t> values_;
+  vector<int32_t> rep_levels_;
+  vector<int32_t> def_levels_;
+  vector<uint8_t> buffer_;
 };
 
 // API to read values from a single column. This is the main client facing API.
@@ -242,9 +240,11 @@ class ColumnReader {
   };
 
   ColumnReader(const parquet::ColumnMetaData*,
-      const parquet::SchemaElement*, InputStream* stream, 
-      int max_repetition_level,
-      int max_definition_level);
+      //const parquet::SchemaElement*, 
+      InputStream* stream, 
+      const ColumnDescriptor& desc);
+      //int max_repetition_level,
+      //int max_definition_level);
 
   ~ColumnReader();
 
@@ -261,11 +261,16 @@ class ColumnReader {
   ByteArray GetByteArray(int* definition_level, int* repetition_level);
 
   // Batch interface
-  template<typename T> int GetValueBatch(ValueBatch<T>& batch, int max_values);
-  template<typename T> int GetRecordValueBatch(ValueBatch<T>& batch,
+  //template<typename T>
+  int GetValueBatch(ValueBatch& batch, int max_values);
+  //template<typename T>
+  int GetRecordValueBatch(ValueBatch& batch,
     vector<int>& record_offsets, int num_records);
-  template<typename T> int DecodeValues(T* values, vector<uint8_t>& buf, int count);
+  //template<typename T> 
+private:
+  int DecodeValues(uint8_t* values, vector<uint8_t>& buf, int count);
 
+public:
   // skip values
   int skipValue(int count);
   int skipCurrentRecord();
@@ -306,7 +311,8 @@ class ColumnReader {
 public:
   const parquet::ColumnMetaData* metadata_;
 private:
-  const parquet::SchemaElement* schema_;
+  ColumnDescriptor column_;
+  //const parquet::SchemaElement* schema_;
   InputStream* stream_;
 
   // Compression codec to use.
@@ -336,19 +342,24 @@ private:
   int saved_rep_level_;
 };
 
+class ColumnFilter {
+};
+
+class RecordFilter {
+};
+
+class RecordConvertor;
+
 //utitlity class to go through parquet file scan specific column
 class ColumnChunkGenerator {
 public:
-  ColumnChunkGenerator(const std::string& file_path, const std::string& col_path);
-  ColumnChunkGenerator(const std::string& file_path, int col_idx);
-  int GetMaxDefinitionLevel() const {
-    return max_definition_level_;
-  }
-
-  int GetMaxRepetitionLevel() const {
-    return max_repetition_level_;
-  }
-
+  ColumnChunkGenerator(const string& path, parquet::FileMetaData& fmd, 
+    SchemaHelper& helper);
+  //ColumnChunkGenerator(const string& path);
+  //const string& file_path, const std::string& col_path);
+  //ColumnChunkGenerator(const string& file_path, int col_idx);
+  //ColumnChunkGenerator(const string& path);
+  void selectColumn(int col_id);
   const std::string& GetColumnPath() const {
     return col_path_;
   }
@@ -362,145 +373,64 @@ public:
   bool next(boost::shared_ptr<ColumnReader>&);
 
 private:
-  std::string file_path_;
+  const string& file_path_;
   parquet::FileMetaData metadata_;
   parquet::ColumnMetaData column_metadata_;
-  int row_group_idx_;
+  SchemaHelper& helper_;
 
-  std::string col_path_;
+  int row_group_idx_;
+  string col_path_;
   int col_idx_;
   parquet::ColumnChunk col_chunk_;
-  int max_definition_level_;
-  int max_repetition_level_;
-  boost::scoped_ptr<SchemaHelper> helper_;
   boost::scoped_ptr<InputStream> input_;
 };
 
-// vector of column rep/def levels, and values
-// for a same record
-class ColumnValueChunk {
+class ParquetFileReader {
 public:
-  ColumnValueChunk(ColumnChunkGenerator& generator)
-  : generator_(generator)
-  {
-    generator_.next(reader_);
-    value_loaded_ = false;
-    rep_lvl_pos_ = 0;
-    def_lvl_pos_ = 0;
-    val_buf_pos_ = 0;
-    num_values_ = 0;
-  }
+  ParquetFileReader(const string& path);
 
-  void resetBufferPos() {
-    rep_lvl_pos_ = 0;
-    def_lvl_pos_ = 0;
-    val_buf_pos_ = 0;
-  }
+  const ColumnDescriptor& GetColumnDescriptor(int column_id);
+  ValueBatch& GetColumnValues(int column_id);
 
-  void clearBuffer() {
-    rep_lvls_.resize(0);
-    def_lvls_.resize(0);
-    val_buff_.resize(0);
-    resetBufferPos();
-    value_loaded_ = false;
-  }
+  void syncColumnsBoundray();
+  int  LoadColumnData(int fid, int num_records);
 
-  void scanRecordBoundary();
+private:
+  string file_path_;
+  parquet::FileMetaData metadata_;
 
-  template<typename F>
-  int applyFilter(F f){
-    int r = f(num_values_, (void*)&val_buff_[0]);
-    return r;
-  }
-
-  int nextDefinitionLevel() {
-    if (def_lvl_pos_ < def_lvls_.size())
-      return def_lvls_[def_lvl_pos_++];
-    return 0;
-  }
-
-  int nextRepetitionLevel() {
-  	if (rep_lvl_pos_ < rep_lvls_.size())
-      return rep_lvls_[rep_lvl_pos_++];
-	  return 0;
-  }
-
-  bool boolValue() {
-    return reinterpret_cast<bool*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  int32_t int32Value() {
-    return reinterpret_cast<int32_t*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  int64_t int64Value() {
-    return reinterpret_cast<int64_t*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  Int96 int96Value() {
-    return reinterpret_cast<Int96*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  float floatValue() {
-    return reinterpret_cast<float*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  double doubleValue() {
-    return reinterpret_cast<double*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  ByteArray byteArrayValue() {
-    return reinterpret_cast<ByteArray*>(&val_buff_[0])[val_buf_pos_];
-  }
-
-  // number of values, including NULL
-  int valueLoaded() const {
-  	return value_loaded_; }
-
-  bool HasNext() {
-    if (reader_->HasNext())
-      return true;
-    generator_.next(reader_);
-    return reader_->HasNext();
-  }
-
-protected:
-  ColumnChunkGenerator& generator_;
-  boost::shared_ptr<ColumnReader> reader_;
-  bool value_loaded_;
-  int num_values_;
-
-  int rep_lvl_pos_;
-  int def_lvl_pos_;
-  int val_buf_pos_;
-  std::vector<int> rep_lvls_;
-  std::vector<int> def_lvls_;
-  std::vector<uint8_t> val_buff_;
+  vector<int*> rep_levels_;
+  vector<int> offsets_;
+  vector<ValueBatch> values_;
+  vector<boost::shared_ptr<ColumnReader> > readers_;
+  vector<boost::shared_ptr<ColumnChunkGenerator> > chunk_generators_;
+  boost::scoped_ptr<SchemaHelper> helper_;
 };
 
-class ColumnConverterFactory {
+class RecordConvertor {
 public:
-  virtual bool applyFilter() = 0;
-  virtual ColumnValueChunk& GetChunk(int fid) = 0;
-  virtual void consumeValueChunk(int fid, ColumnValueChunk& ch) = 0;
-  virtual ~ColumnConverterFactory(){};
+  virtual void startRecord() = 0;
+  virtual void convertField(int fid) = 0;
+  virtual void endRecord() = 0;
 };
 
 class RecordAssembler {
 public:
-  RecordAssembler(SchemaHelper& helper, ColumnConverterFactory& fac):
-    helper_(helper), fac_(fac) {
+  RecordAssembler(SchemaHelper& helper, vector<int*>& field_rep_vals, 
+    RecordConvertor& convertor) :
+    helper_(helper), rep_vals_(field_rep_vals), convertor_(convertor) {
   }
 
-  void selectOutputColumns(const std::vector<std::string>& columns) {
+  void selectOutputColumns(const vector<string>& columns) {
     helper_.BuildFSM(columns, fsm_);
   }
 
   int assemble();
   
 private:
+  vector<int*>& rep_vals_;
   SchemaHelper& helper_;
-  ColumnConverterFactory& fac_;
+  RecordConvertor& convertor_;
   SchemaFSM fsm_;
 };
 
@@ -546,112 +476,6 @@ inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
   if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
   if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
   return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-template<typename T>
-int ColumnReader::GetValueBatch(ValueBatch<T>& batch, int max_values) {
-  batch.max_def_level_ = max_definition_level_;
-  batch.rep_levels_.resize(max_values);
-  batch.def_levels_.resize(max_values);
-  batch.resize(max_values);
-
-  int def_values = 0;
-  int num_nonnulls = 0;
-
-  if (max_definition_level_ > 0) {
-    int num_nulls = 0;
-    int state = 0, start_p = 0;
-    for (int i=0; i<max_values; ++i) {
-      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
-        break;
-      def_values ++;
-      bool is_null = batch.def_levels_[i] < max_definition_level_;
-      if (is_null) num_nulls ++;
-      switch (state) {
-      case 0:
-        if (is_null) state = 2; 
-        else { state = 1; start_p = i; }
-        break;
-      case 1:
-        if (is_null) {
-          DecodeValues(&batch[start_p], batch.buffer_, i - start_p);
-          state = 2;
-        } break;
-      case 2:
-        if (!is_null) { state = 1; start_p = i; }
-      }
-    }
-    if ( state == 1 )
-      DecodeValues(&batch[start_p], batch.buffer_, def_values - start_p);
-  } else {
-    def_values = max_values;
-    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * def_values);
-    def_values = DecodeValues(&batch[0], batch.buffer_, max_values);
-  }
-  int rep_values = def_values;
-  if (repetition_level_decoder_) {
-    rep_values = decodeRepetitionLevels(batch.rep_levels_, rep_values);
-  } else {
-    rep_values = max_values;
-    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * rep_values);
-  }
-  return def_values;
-}
-
-template<typename T>
-int ColumnReader::GetRecordValueBatch(ValueBatch<T>& batch, 
-  vector<int>& record_offsets, int num_records)
-{
-  int num_values = num_records;
-  if (max_repetition_level_ > 0) {
-    vector<int32_t> buf;
-    buf.reserve(num_records);
-    record_offsets.reserve(num_records);
-    do {
-      int rep_val = 0;
-      if (!repetition_level_decoder_->Get(&rep_val)) break;
-      if (rep_val == 0) record_offsets.push_back((int32_t)buf.size());
-      buf.push_back(rep_val);
-    } while (record_offsets.size() < num_records);
-    num_values = buf.size();
-    batch.rep_levels_.swap(buf);
-  }
-
-  batch.resize(num_values);
-
-  if (max_definition_level_ > 0) {
-    int state = 0, start_p = 0;
-    int values = 0;
-    for (int i=0; i<num_values; ++i) {
-      if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
-        break;
-      values ++;
-      bool is_null = batch.def_levels_[i] < max_definition_level_;
-      switch (state) {
-      case 0: if (is_null) state = 2;
-              else { state = 1; start_p = i; } break;
-      case 1: if (is_null) {
-                DecodeValues(&batch[start_p], batch.buffer_, i - start_p);
-                state = 2;
-              } break;
-      case 2: if (!is_null) { state = 1; start_p = i; }
-      }   
-    }
-    if ( state == 1 ) 
-      DecodeValues(&batch[start_p], batch.buffer_, values - start_p);
-    num_values = values;
-  } else {
-    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
-    num_values = DecodeValues(&batch[0], batch.buffer_, num_values);
-  }
-  if (max_repetition_level_ == 0) {
-    batch.rep_levels_.resize(num_values);
-    memset(&batch.rep_levels_[0], 0, sizeof(int32_t) * num_values);
-    record_offsets.resize(num_values);
-    for (int i=0; i<num_values; ++i)
-      record_offsets[i] = i;
-  }
-  return num_values;
 }
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain

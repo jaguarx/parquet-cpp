@@ -39,6 +39,19 @@ void dump_values(ostream& oss,
   }
 }
 
+class DumpConvertor : public RecordConvertor {
+public:
+  void startRecord() {
+  }
+
+  void convertField(int fid) {
+  }
+
+  void endRecord() {
+  }
+};
+
+/*
 class DumpColumnValueChunk : public ColumnValueChunk {
 public:
   DumpColumnValueChunk(ColumnChunkGenerator& generator, const string& col_path)
@@ -59,7 +72,7 @@ public:
 private:
   parquet::SchemaElement element_;
   string col_path_;
-};
+};*/
 
 struct equal_int64 {
   int64_t v_;
@@ -75,6 +88,7 @@ struct equal_int64 {
   }
 };
 
+/*
 class DumpColumnConverterFactory : public ColumnConverterFactory {
 public:
   struct matchset_t {
@@ -96,8 +110,8 @@ public:
   : filter_value_(filter_value), tree_(tree),
     helper_(helper), file_path_(file_path) {
 
-    gens_.resize(helper.schema.size());
-    value_chunks_.resize(helper.schema.size());
+    gens_.resize(helper.columns.size());
+    value_chunks_.resize(helper.columns.size());
 
     record_count_ = 0;
   }
@@ -135,9 +149,10 @@ private:
   SchemaHelper& helper_;
   string file_path_;
   vector<ColumnChunkGenerator*> gens_;
-  vector<DumpColumnValueChunk*> value_chunks_;
+  //vector<DumpColumnValueChunk*> value_chunks_;
   int record_count_;
 };
+*/
 
 struct command_t {
   typedef int (func_t)(int, char**);
@@ -155,52 +170,18 @@ int _show_schema(int argc, char** argv) {
     if (argc > 2)
       cout << argv[i] << "\n";
     SchemaHelper h(argv[i]);
-    list<int> child_stack;
-    child_stack.push_front(0);
-    cout << "message " << h.schema[0].name << " {\n";
-    for (int col_idx = 1; col_idx < h.schema.size(); ++col_idx) {
-      const SchemaElement& element = h.schema[col_idx];
-      for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
-      cout << element.repetition_type << " ";
-      if (element.num_children == 0) {
-        child_stack.front() --;
-        cout<< element.type << " "
-            << element.name << "; /*"
-            << col_idx << "*/\n";
-         
-        if (child_stack.front() == 0) {
-          do {
-            child_stack.pop_front();
-            for (int j=1; j<=child_stack.size(); ++j) cout << "  ";
-            cout << "}\n";
-            if (!child_stack.empty())
-              child_stack.front()--;
-          } while (!child_stack.empty() && child_stack.front() == 0);
-        }
-      } else {
-        cout << "group " /*<< element.name*/ << " {\n";
-        child_stack.push_front(element.num_children);
-      }
-    }
-    cout << "}\n";
+    parquet_cpp::DumpSchema(cout, h.columns);
   }
   return 0;
 }
 
 template<typename T>
-void _batch_dump(ColumnReader& reader, int batch_size) {
-  if (!reader.HasNext())
-    return;
-  ValueBatch<T> batch;
+void _batch_dump(ValueBatch& batch, int count) {
   int v = 0;
-  do {
-    vector<int> offsets;
-    v = reader.GetRecordValueBatch(batch, offsets, batch_size);
-    for (int i=0; i<v; ++i) {
-      if (batch.isNull(i)) cout << "NULL\n";
-      else cout << batch.get(i) << "\n";
-    }
-  } while (v == batch_size);
+  for (int i=0; i<count; ++i) {
+    if (batch.isNull(i)) cout << "NULL\n";
+    else cout << *batch.get<T>(i) << "\n";
+  }
 }
 
 int _dump_columns(int argc, char** argv) {
@@ -214,26 +195,27 @@ int _dump_columns(int argc, char** argv) {
   if (optind >= argc)
     return 1;
 
-  vector<uint8_t> buf;
-  ColumnChunkGenerator gen(argv[optind], col_idx);
-  boost::shared_ptr<ColumnReader> reader;
-
-  int count = 128;
-  while (gen.next(reader)) {
-    const ColumnMetaData& cmd = gen.columnMetaData();
-    switch (cmd.type) {
+  int batch_size = 128;
+  ParquetFileReader reader(argv[optind]);
+  const ColumnDescriptor& desc = reader.GetColumnDescriptor(col_idx);
+  
+  int count = 0;
+  do {
+    count = reader.LoadColumnData(col_idx, batch_size);
+    ValueBatch& batch = reader.GetColumnValues(col_idx);
+    switch (desc.element.type) {
     //case parquet::Type::BOOLEAN: _batch_dump<bool>(*reader, count); break;
-    case parquet::Type::INT32: _batch_dump<int32_t>(*reader, count); break;
-    case parquet::Type::INT64: _batch_dump<int64_t>(*reader, count); break;
+    case parquet::Type::INT32: _batch_dump<int32_t>(batch, count); break;
+    case parquet::Type::INT64: _batch_dump<int64_t>(batch, count); break;
     //case parquet::Type::INT96:
-    case parquet::Type::FLOAT: _batch_dump<float>(*reader, count); break;
-    case parquet::Type::DOUBLE: _batch_dump<double>(*reader, count); break;
-    case parquet::Type::BYTE_ARRAY: _batch_dump<ByteArray>(*reader, count); break;
+    case parquet::Type::FLOAT: _batch_dump<float>(batch, count); break;
+    case parquet::Type::DOUBLE: _batch_dump<double>(batch, count); break;
+    case parquet::Type::BYTE_ARRAY: _batch_dump<ByteArray>(batch, count); break;
     //case parquet::Type::FIXED_LENGTH_BYTE_ARRAY:
     default:
-      cerr << "batch dump doesn't support type " << cmd.type << " yet\n";
+      cerr << "batch dump doesn't support type " << desc.element.type << " yet\n"; return 0;
     }
-  }
+  } while (count == batch_size);
   return 0;
 }
 
@@ -247,8 +229,7 @@ int _dump_column_chunk(int argc, char** argv) {
   }
   if (optind >= argc)
     return 1;
-
-  vector<uint8_t> buf;
+/*
   ColumnChunkGenerator gen(argv[optind], col_idx);
   boost::shared_ptr<ColumnReader> reader;
   while (gen.next(reader)) {
@@ -261,6 +242,7 @@ int _dump_column_chunk(int argc, char** argv) {
     }
     cout << "\n";
   }
+*/
   return 0;
 }
 
@@ -289,13 +271,13 @@ int _search(int argc, char** argv) {
     columns.push_back(argv[i]);
   }
 
-  DumpColumnConverterFactory fac(filter_value, t, helper, filename);
-  RecordAssembler ra = RecordAssembler(helper, fac);
-  ra.selectOutputColumns(columns);
+  //DumpColumnConverterFactory fac(filter_value, t, helper, filename);
+  //RecordAssembler ra = RecordAssembler(helper, fac);
+  //ra.selectOutputColumns(columns);
 
-  while (ra.assemble()) {
+  //while (ra.assemble()) {
 
-  }
+  //}
   return 0; 
 }
 
