@@ -851,10 +851,13 @@ ParquetFileReader::ParquetFileReader(const string& path)
   if (!GetFileMetadata(file_path_, &metadata_))
     throw ParquetException("unable to open file");
 
-  readers_.resize(metadata_.schema.size());
-  chunk_generators_.resize(metadata_.schema.size());
-  values_.resize(metadata_.schema.size());
+  size_t size = metadata_.schema.size();
+  readers_.resize(size);
+  chunk_generators_.resize(size);
+  values_.resize(size);
   helper_.reset(new SchemaHelper(metadata_.schema));
+  for (int i=1; i<size; ++i)
+    values_[i].BindDescriptor(helper_->columns[i]);
 }
 
 const ColumnDescriptor& 
