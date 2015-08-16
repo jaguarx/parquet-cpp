@@ -65,17 +65,10 @@ ColumnReader::~ColumnReader() {
 }
 
 ColumnReader::ColumnReader(const ColumnMetaData* metadata,
-    //const SchemaElement* schema, 
-    InputStream* stream,
-    const ColumnDescriptor& desc)
-    //int max_repetition_level,
-    ///int max_definition_level)
+    InputStream* stream, const ColumnDescriptor& desc)
   : metadata_(metadata),
     column_(desc),
-    //schema_(schema),
     stream_(stream),
-    //max_repetition_level_(max_repetition_level),
-    //max_definition_level_(max_definition_level),
     current_decoder_(NULL),
     num_buffered_values_(0),
     num_decoded_values_(0),
@@ -95,40 +88,6 @@ ColumnReader::ColumnReader(const ColumnMetaData* metadata,
 
   config_ = Config::DefaultConfig();
   values_buffer_.resize(config_.batch_size * value_byte_size(metadata->type));
-}
-
-void ColumnReader::BatchDecode() {
-  buffered_values_offset_ = 0;
-  uint8_t* buf= &values_buffer_[0];
-  int batch_size = config_.batch_size;
-  switch (metadata_->type) {
-    case parquet::Type::BOOLEAN:
-      num_decoded_values_ =
-          current_decoder_->GetBool(reinterpret_cast<bool*>(buf), batch_size);
-      break;
-    case parquet::Type::INT32:
-      num_decoded_values_ =
-          current_decoder_->GetInt32(reinterpret_cast<int32_t*>(buf), batch_size);
-      break;
-    case parquet::Type::INT64:
-      num_decoded_values_ =
-          current_decoder_->GetInt64(reinterpret_cast<int64_t*>(buf), batch_size);
-      break;
-    case parquet::Type::FLOAT:
-      num_decoded_values_ =
-          current_decoder_->GetFloat(reinterpret_cast<float*>(buf), batch_size);
-      break;
-    case parquet::Type::DOUBLE:
-      num_decoded_values_ =
-          current_decoder_->GetDouble(reinterpret_cast<double*>(buf), batch_size);
-      break;
-    case parquet::Type::BYTE_ARRAY:
-      num_decoded_values_ =
-          current_decoder_->GetByteArray(reinterpret_cast<ByteArray*>(buf), batch_size);
-      break;
-    default:
-      ParquetException::NYI("Unsupported type.");
-  }
 }
 
 // PLAIN_DICTIONARY is deprecated but used to be used as a dictionary index
@@ -353,9 +312,9 @@ bool ColumnReader::ReadNewPage() {
 int ColumnReader::DecodeValues(uint8_t* val_, vector<uint8_t>& buf, int count) {
   switch (column_.element.type) {
   case Type::BOOLEAN: return current_decoder_->GetBool((bool*)val_, count);
-  case Type::INT32: return current_decoder_->GetInt32((int32_t*)val_, count);
-  case Type::INT64: return current_decoder_->GetInt64((int64_t*)val_, count);
-  case Type::DOUBLE: return current_decoder_->GetDouble((double*)val_, count);
+  case Type::INT32:   return current_decoder_->GetInt32((int32_t*)val_, count);
+  case Type::INT64:   return current_decoder_->GetInt64((int64_t*)val_, count);
+  case Type::DOUBLE:  return current_decoder_->GetDouble((double*)val_, count);
   case Type::BYTE_ARRAY: {
     ByteArray* val = (ByteArray*)val_;
     count = current_decoder_->GetByteArray(val, count);
@@ -374,53 +333,6 @@ int ColumnReader::DecodeValues(uint8_t* val_, vector<uint8_t>& buf, int count) {
   return -1;
 }
 
-bool ColumnReader::ReadDefinitionRepetitionLevels(int* def_level, int* rep_level) {
-  *def_level = nextDefinitionLevel();
-  *rep_level = nextRepetitionLevel();
-  --num_buffered_values_;
-  return *def_level < max_definition_level_;
-}
-
-bool ColumnReader::peekDefinitionRepetitionLevels(int* def_level, int* rep_level) {
-  *def_level = nextDefinitionLevel();
-  *rep_level = nextRepetitionLevel();
-  return true;
-}
-
-int ColumnReader::nextDefinitionLevel() {
-  if (max_definition_level_ > 0) {
-    int val = 0;
-    if (!definition_level_decoder_->Get(&val)) {
-      return 0;
-    }
-    return val;
-  }
-  return 0;
-}
-
-int ColumnReader::peekRepetitionLevel() {
-  if (saved_rep_level_ >= 0)
-    return saved_rep_level_;
-  saved_rep_level_ = nextRepetitionLevel();
-  return saved_rep_level_;
-}
-
-int ColumnReader::nextRepetitionLevel() {
-  if (saved_rep_level_ >= 0) {
-    int t = saved_rep_level_;
-    saved_rep_level_ = -1;
-    return t;
-  }
-  if (max_repetition_level_ > 0) {
-    int rep_lvl = 0;
-    if (!repetition_level_decoder_->Get(&rep_lvl)) {
-      return 0;
-    }
-    return rep_lvl;
-  }
-  return 0;
-}
-
 int ColumnReader::skipValue(int values) {
   int buf_bump = std::min(values, 
           num_decoded_values_ - buffered_values_offset_);
@@ -430,90 +342,6 @@ int ColumnReader::skipValue(int values) {
     return current_decoder_->skip(values - buf_bump);
   }
   return values;
-}
-
-int ColumnReader::copyValues(vector<uint8_t>& buf, int max_values) {
-  int buf_bump = std::min(max_values,
-	    num_decoded_values_ - buffered_values_offset_);
-  max_values -= buf_bump;
-  uint8_t* pvalbuf = &values_buffer_[0];
-  int values = 0;
-  num_buffered_values_ -= buf_bump;
-  switch (metadata_->type) {
-    case parquet::Type::BOOLEAN: {
-      buf.resize(max_values);
-      bool* pa = reinterpret_cast<bool*>(pvalbuf) + buffered_values_offset_;
-      buf.assign(pa, pa+buf_bump);
-      values = current_decoder_->GetBool(
-    		  reinterpret_cast<bool*>(&buf[0])+buf_bump, max_values);
-    }; break;
-    case parquet::Type::INT32: {
-      buf.resize(max_values*sizeof(int32_t));
-      int32_t* pa = reinterpret_cast<int32_t*>(pvalbuf) + buffered_values_offset_;
-      buf.assign(pa, pa+buf_bump);
-      values = current_decoder_->GetInt32(
-    		  reinterpret_cast<int32_t*>(&buf[0])+buf_bump, max_values);
-    }; break;
-    case parquet::Type::INT64: {
-        buf.resize(max_values*sizeof(int64_t));
-        int64_t* pa = reinterpret_cast<int64_t*>(pvalbuf) + buffered_values_offset_;
-        buf.assign(pa, pa+buf_bump);
-        values = current_decoder_->GetInt64(
-        		reinterpret_cast<int64_t*>(&buf[0])+buf_bump, max_values);
-      }; break;
-    case parquet::Type::FLOAT:  {
-        buf.resize(max_values*sizeof(float));
-        float* pa = reinterpret_cast<float*>(pvalbuf) + buffered_values_offset_;
-        buf.assign(pa, pa+buf_bump);
-        values = current_decoder_->GetFloat(
-        		reinterpret_cast<float*>(&buf[0])+buf_bump, max_values);
-      }; break;
-    case parquet::Type::DOUBLE: {
-        buf.resize(max_values*sizeof(double));
-        double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
-        buf.assign(pa, pa+buf_bump);
-        values = current_decoder_->GetDouble(
-        		reinterpret_cast<double*>(&buf[0])+buf_bump, max_values);
-      }; break;
-    case parquet::Type::BYTE_ARRAY:{
-        buf.resize(max_values*sizeof(ByteArray));
-        double* pa = reinterpret_cast<double*>(pvalbuf) + buffered_values_offset_;
-        buf.assign(pa, pa+buf_bump);
-        values = current_decoder_->GetByteArray(
-        		reinterpret_cast<ByteArray*>(&buf[0])+buf_bump, max_values);
-      }; break;
-    default:
-      ParquetException::NYI("Unsupported type.");
-  }
-  num_buffered_values_ -= values;
-  return values;
-}
-
-int ColumnReader::skipCurrentRecord() {
-  if (!HasNext())
-    return 0;
-
-  int def_lvl = 0, rep_lvl = 0;
-  int values = 0;
-  //ReadDefinitionRepetitionLevels(&def_lvl, &rep_lvl);
-  def_lvl = nextDefinitionLevel();
-  rep_lvl = nextRepetitionLevel();
-  --num_buffered_values_;
-  if (def_lvl == max_definition_level_) values ++;
-
-  do {
-    rep_lvl = nextRepetitionLevel();
-    if (rep_lvl > 0) {
-      def_lvl = nextDefinitionLevel();
-      --num_buffered_values_;
-      if(def_lvl == max_definition_level_)
-        values ++;
-    }
-  } while (rep_lvl > 0);
-  if (values > 0) {
-    skipValue(values);
-  }
-  return (HasNext())? 1: 0;
 }
 
 int ColumnReader::decodeRepetitionLevels(
@@ -526,32 +354,6 @@ int ColumnReader::decodeRepetitionLevels(
     if (!repetition_level_decoder_->Get(&buf[i]))
       break;
   }
-  return values;
-}
-
-// definition_levels
-int ColumnReader::decodeValues(std::vector<uint8_t>& buf,
-                 std::vector<int32_t>& definition_levels,
-                 int value_count)
-{
-  int values = min(num_buffered_values_, value_count);
-  definition_levels.resize(values);
-  int num_nonnulls = values;
-  if (max_definition_level_ > 0) {
-    int num_nulls = 0;
-    for(int i=0; i<values; ++i) {
-      int v = 0;
-      if (!definition_level_decoder_->Get(&definition_levels[i])) {
-        break;
-      }
-      if (definition_levels[i] < max_definition_level_)
-        num_nulls ++;
-    }
-    num_nonnulls = values - num_nulls;
-  } else {
-    memset(&definition_levels[0], sizeof(int32_t)*values, 0);
-  }
-  copyValues(buf, num_nonnulls);
   return values;
 }
 
@@ -607,16 +409,22 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
   vector<int>& record_offsets, int num_records)
 {
   int num_values = num_records;
+  int values = num_buffered_values_;
   if (max_repetition_level_ > 0) {
     vector<int32_t> buf;
     buf.reserve(num_records);
+
+    if (saved_rep_level_ >= 0) {
+      buf.push_back(saved_rep_level_);
+      saved_rep_level_ = -1;
+    }
     record_offsets.reserve(num_records);
     do {
-      int rep_val = 0;
-      if (!repetition_level_decoder_->Get(&rep_val)) break;
-      if (rep_val == 0) record_offsets.push_back((int32_t)buf.size());
-      buf.push_back(rep_val);
-    } while (record_offsets.size() < num_records);
+      if (!repetition_level_decoder_->Get(&saved_rep_level_)) break;
+      if (saved_rep_level_ == 0) record_offsets.push_back((int32_t)buf.size());
+      buf.push_back(saved_rep_level_);
+      values --;
+    } while (record_offsets.size() <= num_records && values > 0);
     num_values = buf.size();
     batch.rep_levels_.swap(buf);
   }
@@ -655,11 +463,15 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
     for (int i=0; i<num_values; ++i)
       record_offsets[i] = i;
   }
+  batch.rep_levels_.push_back(0);
   return num_values;
 }
 
 void ValueBatch::BindDescriptor(ColumnDescriptor& desc) {
-  value_byte_size_ = value_byte_size(desc.element.type);
+  if (desc.element.num_children == 0)
+    value_byte_size_ = value_byte_size(desc.element.type);
+  else 
+    value_byte_size_ = 0;
   max_def_level_ = desc.max_def_level;
 }
 
@@ -830,21 +642,6 @@ void SchemaFSM::dump(ostream& oss) const {
   }
 }
 
-/*
-ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, const string& col_path):
-  file_path_(file_path), row_group_idx_(0), col_path_(col_path)
-{
-  if (!GetFileMetadata(file_path_, &metadata_))
-    throw ParquetException("unable to open file");
-  helper_.reset(new SchemaHelper(metadata_.schema));
-  col_idx_ = helper_->GetElementId(col_path);
-  if (col_idx_ < 0)
-    throw ParquetException("invalid column");
-
-  max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
-  max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
-}
-*/
 ParquetFileReader::ParquetFileReader(const string& path)
  : file_path_(path) 
 {
@@ -852,6 +649,7 @@ ParquetFileReader::ParquetFileReader(const string& path)
     throw ParquetException("unable to open file");
 
   size_t size = metadata_.schema.size();
+  rep_levels_.resize(size);
   readers_.resize(size);
   chunk_generators_.resize(size);
   values_.resize(size);
@@ -870,11 +668,16 @@ ValueBatch& ParquetFileReader::GetColumnValues(int column_id) {
 }
 
 int ParquetFileReader::LoadColumnData(int fid, int num_records) {
+  const ColumnDescriptor& desc = helper_->columns[fid];
+  if (desc.element.num_children > 0)
+    return 0;
+  if (rep_levels_[fid] == NULL) {
+    rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]); }
   if (readers_[fid].get() == NULL) {
     chunk_generators_[fid].reset(new ColumnChunkGenerator(file_path_, metadata_, 
       *helper_));
     chunk_generators_[fid]->selectColumn(fid);
-    if (!chunk_generators_[fid]->next(readers_[fid])) 
+    if (!chunk_generators_[fid]->NextReader(readers_[fid])) 
       return 0;
     if (!readers_[fid]->HasNext())
       return 0;
@@ -882,43 +685,22 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records) {
   int records_remains = num_records;
   int values = 0;
   vector<int> offsets;
-  const ColumnDescriptor& desc = helper_->columns[fid];
   ColumnReader& reader = *readers_[fid];
   do {
     values += reader.GetRecordValueBatch(values_[fid], offsets, records_remains);
     if (offsets.size() == num_records) break;
-    if (!chunk_generators_[fid]->next(readers_[fid])) break;
+    if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
     records_remains = num_records - offsets.size();
   } while (records_remains > 0);
+  rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]);
   return values;
 }
-
-/*
-ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path)
- : file_path_(file_path), row_group_idx_(0) {
-  if (!GetFileMetadata(file_path_, &metadata_))
-    throw ParquetException("unable to open file");
-  
-} */
 
 ColumnChunkGenerator::ColumnChunkGenerator(const string& file_path, 
   parquet::FileMetaData& fmd, SchemaHelper& helper):
   file_path_(file_path), metadata_(fmd), helper_(helper), row_group_idx_(0)
 {
-/*
-  if (!GetFileMetadata(file_path_, &metadata_))
-    throw ParquetException("unable to open file");
-  if (col_idx >= metadata_.schema.size())
-    throw ParquetException("invalid column");
-
-  helper_.reset(new SchemaHelper(metadata_.schema));
-*/
-  //col_idx_ = col_idx;
-  //max_definition_level_ = helper_->GetMaxDefinitionLevel(col_idx_);
-  //max_repetition_level_ = helper_->GetMaxRepetitionLevel(col_idx_);
-  //col_path_ = helper_.GetElementPath(col_idx);
 }
-
 
 string build_path_name(const vector<string>& path_in_schema) {
   stringstream ss;
@@ -935,7 +717,7 @@ void ColumnChunkGenerator::selectColumn(int col_idx) {
   col_path_ = helper_.GetElementPath(col_idx);
 }
 
-bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
+bool ColumnChunkGenerator::NextReader(shared_ptr<ColumnReader>& reader)
 {
   if (row_group_idx_ >= metadata_.row_groups.size())
     return false;
@@ -990,19 +772,29 @@ bool ColumnChunkGenerator::next(shared_ptr<ColumnReader>& reader)
 
     column_metadata_ = col.meta_data;
     ColumnDescriptor& desc = helper_.columns[col_idx_];
-    //desc.element = metadata_.schema[col_idx_];
-    //desc.max_def_level = max_repetition_level_;
-    //desc.max_rep_level = max_definition_level_;
-    col_chunk_ = col; 
+    col_chunk_ = col;
     reader.reset(new ColumnReader(&(col_chunk_.meta_data), 
-      //&metadata_.schema[col_idx_],
-      input_.get(), 
-      desc));//, max_repetition_level_, max_definition_level_));
+      input_.get(), desc));
     ++ row_group_idx_;
     return true;
   }
   ++ row_group_idx_;
   return false;
+}
+
+int RecordAssembler::assemble() {
+  int entry_state = fsm_.GetEntryState();
+  int fid = entry_state;
+  convertor_.startRecord();
+  while ( fid != ROOT_NODE ) { 
+    int rep_lvl = rep_vals_[fid][1];
+    convertor_.convertField(fid);
+    rep_vals_[fid]++;
+    int nfid = fsm_.GetNextState(fid, rep_lvl);
+    fid = nfid;
+  }
+  convertor_.endRecord();
+  return 1;
 }
 
 void DumpSchema(ostream& oss, const vector<ColumnDescriptor>& columns) {
@@ -1061,31 +853,31 @@ ostream& operator<<(ostream& oss, FieldRepetitionType::type t) {
   return oss;
 }
 
-ostream& operator<<(ostream& oss, parquet::Type::type t) {
+ostream& operator<<(ostream& oss, Type::type t) {
   switch(t){
-  case parquet::Type::BOOLEAN: oss << "boolean"; break;
-  case parquet::Type::INT32: oss << "int32"; break;
-  case parquet::Type::INT64: oss << "int64"; break;
-  case parquet::Type::INT96: oss << "int96"; break;
-  case parquet::Type::FLOAT: oss << "float"; break;
-  case parquet::Type::DOUBLE: oss << "double"; break;
-  case parquet::Type::BYTE_ARRAY: oss << "byte_array"; break;
-  case parquet::Type::FIXED_LEN_BYTE_ARRAY: oss << "fixed_len_byte_array"; break;
+  case Type::BOOLEAN: oss << "boolean"; break;
+  case Type::INT32: oss << "int32"; break;
+  case Type::INT64: oss << "int64"; break;
+  case Type::INT96: oss << "int96"; break;
+  case Type::FLOAT: oss << "float"; break;
+  case Type::DOUBLE: oss << "double"; break;
+  case Type::BYTE_ARRAY: oss << "byte_array"; break;
+  case Type::FIXED_LEN_BYTE_ARRAY: oss << "fixed_len_byte_array"; break;
   default: oss << "unknown-type(" << (int) t << ")";
   }
   return oss;
 }
 
-ostream& operator<<(ostream& oss, parquet::Encoding::type t) {
+ostream& operator<<(ostream& oss, Encoding::type t) {
   switch(t) {
-  case parquet::Encoding::PLAIN: oss << "plain"; break;
-  case parquet::Encoding::PLAIN_DICTIONARY: oss << "plain-dictionary"; break;
-  case parquet::Encoding::RLE: oss << "rle"; break;
-  case parquet::Encoding::BIT_PACKED: oss << "bit-packed"; break;
-  case parquet::Encoding::DELTA_BINARY_PACKED: oss << "delta-bin-packed"; break;
-  case parquet::Encoding::DELTA_LENGTH_BYTE_ARRAY: oss << "delta-len-byte-array"; break;
-  case parquet::Encoding::DELTA_BYTE_ARRAY: oss << "delta-byte-array"; break;
-  case parquet::Encoding::RLE_DICTIONARY: oss << "rle-dictionary"; break;
+  case Encoding::PLAIN: oss << "plain"; break;
+  case Encoding::PLAIN_DICTIONARY: oss << "plain-dictionary"; break;
+  case Encoding::RLE: oss << "rle"; break;
+  case Encoding::BIT_PACKED: oss << "bit-packed"; break;
+  case Encoding::DELTA_BINARY_PACKED: oss << "delta-bin-packed"; break;
+  case Encoding::DELTA_LENGTH_BYTE_ARRAY: oss << "delta-len-byte-array"; break;
+  case Encoding::DELTA_BYTE_ARRAY: oss << "delta-byte-array"; break;
+  case Encoding::RLE_DICTIONARY: oss << "rle-dictionary"; break;
   default: oss << "unknown-encoding(" << (int) t << ")";
   }
   return oss;

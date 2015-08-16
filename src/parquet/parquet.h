@@ -194,7 +194,6 @@ private:
 
 class ColumnReader;
 
-//template<typename T>
 class ValueBatch {
  public:
   ValueBatch() {}
@@ -204,25 +203,31 @@ class ValueBatch {
     return def_level < max_def_level_;
   }
   template<typename T>
-  T* get(int index) {
+  const T& Get(int index) {
     T* base = reinterpret_cast<T*>(&values_[0]);
-    return &base[index];
-  }
+    return base[index]; }
+
   uint8_t* valueAddress(int offset) {
     uint8_t* base = (uint8_t*)&values_[0];
-    return base + offset * value_byte_size_;
-  }
+    return base + offset * value_byte_size_; }
+
   void resize(int values) {
     def_levels_.resize(values);
-    values_.resize(1+(values*value_byte_size_)/sizeof(uint32_t));
-  }
+    values_.resize(1+(values*value_byte_size_)/sizeof(uint32_t)); }
+
+  vector<int>& DefinitionLevels() {
+    return def_levels_; }
+
+  vector<int>& RepetitionLevels() {
+    return rep_levels_; }
+
  private:
   friend class ColumnReader;
   int max_def_level_;
   int value_byte_size_;
   vector<uint32_t> values_;
-  vector<int32_t> rep_levels_;
-  vector<int32_t> def_levels_;
+  vector<int> rep_levels_;
+  vector<int> def_levels_;
   vector<uint8_t> buffer_;
 };
 
@@ -240,60 +245,23 @@ class ColumnReader {
   };
 
   ColumnReader(const parquet::ColumnMetaData*,
-      //const parquet::SchemaElement*, 
       InputStream* stream, 
       const ColumnDescriptor& desc);
-      //int max_repetition_level,
-      //int max_definition_level);
 
   ~ColumnReader();
 
   // Returns true if there are still values in this column.
   bool HasNext();
 
-  // Returns the next value of this type.
-  // TODO: batchify this interface.
-  bool GetBool(int* definition_level, int* repetition_level);
-  int32_t GetInt32(int* definition_level, int* repetition_level);
-  int64_t GetInt64(int* definition_level, int* repetition_level);
-  float GetFloat(int* definition_level, int* repetition_level);
-  double GetDouble(int* definition_level, int* repetition_level);
-  ByteArray GetByteArray(int* definition_level, int* repetition_level);
-
   // Batch interface
-  //template<typename T>
   int GetValueBatch(ValueBatch& batch, int max_values);
-  //template<typename T>
   int GetRecordValueBatch(ValueBatch& batch,
     vector<int>& record_offsets, int num_records);
-  //template<typename T> 
-private:
-  int DecodeValues(uint8_t* values, vector<uint8_t>& buf, int count);
 
-public:
   // skip values
   int skipValue(int count);
   int skipCurrentRecord();
 
-  int nextDefinitionLevel();
-  int peekRepetitionLevel();
-  int nextRepetitionLevel();
-  int nextValue() {
-    if (buffered_values_offset_ == num_decoded_values_)
-      BatchDecode();
-    else
-      buffered_values_offset_++;
-    num_buffered_values_ --;
-    return buffered_values_offset_;
-  }
-  int copyValues(std::vector<uint8_t>& buf, int value_count);
-
-  int decodeRepetitionLevels(std::vector<int32_t>& repetition_levels,
-                             int value_count);
-  // definition_levels
-  int decodeValues(std::vector<uint8_t>& buf,
-                   std::vector<int32_t>& definition_levels,
-                   int value_count);
   int MaxDefinitionLevel() const {
     return this->max_definition_level_; }
 
@@ -301,23 +269,21 @@ public:
   bool ReadNewPage();
   // Reads the next definition and repetition level. Returns true if the value is NULL.
   bool ReadDefinitionRepetitionLevels(int* def_level, int* rep_level);
+  int decodeRepetitionLevels(vector<int32_t>& repetition_levels,
+                             int value_count);
 
-  // retur true if value exists
-  bool peekDefinitionRepetitionLevels(int* def_level, int* rep_level);
-
-  void BatchDecode();
+  int DecodeValues(uint8_t* values, vector<uint8_t>& buf, int count);
 
   Config config_;
 public:
   const parquet::ColumnMetaData* metadata_;
 private:
   ColumnDescriptor column_;
-  //const parquet::SchemaElement* schema_;
   InputStream* stream_;
 
   // Compression codec to use.
   boost::scoped_ptr<Codec> decompressor_;
-  std::vector<uint8_t> decompression_buffer_;
+  vector<uint8_t> decompression_buffer_;
 
   // Map of compression type to decompressor object.
   boost::unordered_map<parquet::Encoding::type, boost::shared_ptr<Decoder> > decoders_;
@@ -335,7 +301,7 @@ private:
   Decoder* current_decoder_;
   int num_buffered_values_;
 
-  std::vector<uint8_t> values_buffer_;
+  vector<uint8_t> values_buffer_;
   int num_decoded_values_;
   int buffered_values_offset_;
 
@@ -355,12 +321,9 @@ class ColumnChunkGenerator {
 public:
   ColumnChunkGenerator(const string& path, parquet::FileMetaData& fmd, 
     SchemaHelper& helper);
-  //ColumnChunkGenerator(const string& path);
-  //const string& file_path, const std::string& col_path);
-  //ColumnChunkGenerator(const string& file_path, int col_idx);
-  //ColumnChunkGenerator(const string& path);
+
   void selectColumn(int col_id);
-  const std::string& GetColumnPath() const {
+  const string& GetColumnPath() const {
     return col_path_;
   }
 
@@ -370,7 +333,7 @@ public:
   const parquet::ColumnMetaData& columnMetaData() const {
     return column_metadata_; }
 
-  bool next(boost::shared_ptr<ColumnReader>&);
+  bool NextReader(boost::shared_ptr<ColumnReader>&);
 
 private:
   const string& file_path_;
@@ -394,7 +357,9 @@ public:
 
   void syncColumnsBoundray();
   int  LoadColumnData(int fid, int num_records);
-
+  SchemaHelper& GetHelper() { return *helper_; }
+  vector<int*>& RepetitionLevels() {
+    return rep_levels_; }
 private:
   string file_path_;
   parquet::FileMetaData metadata_;
@@ -412,6 +377,7 @@ public:
   virtual void startRecord() = 0;
   virtual void convertField(int fid) = 0;
   virtual void endRecord() = 0;
+  virtual ~RecordConvertor(){};
 };
 
 class RecordAssembler {
@@ -442,41 +408,41 @@ inline bool ColumnReader::HasNext() {
   return true;
 }
 
-inline bool ColumnReader::GetBool(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return bool();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<bool*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline int32_t ColumnReader::GetInt32(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int32_t();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<int32_t*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline int64_t ColumnReader::GetInt64(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int64_t();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<int64_t*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline float ColumnReader::GetFloat(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return float();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<float*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline double ColumnReader::GetDouble(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return double();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<double*>(&values_buffer_[0])[buffered_values_offset_++];
-}
-
-inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
-  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
-  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-  return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
-}
+//inline bool ColumnReader::GetBool(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return bool();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<bool*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
+//
+//inline int32_t ColumnReader::GetInt32(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int32_t();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<int32_t*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
+//
+//inline int64_t ColumnReader::GetInt64(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int64_t();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<int64_t*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
+//
+//inline float ColumnReader::GetFloat(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return float();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<float*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
+//
+//inline double ColumnReader::GetDouble(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return double();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<double*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
+//
+//inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
+//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
+//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
+//  return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
+//}
 
 // Deserialize a thrift message from buf/len.  buf/len must at least contain
 // all the bytes needed to store the thrift message.  On return, len will be
