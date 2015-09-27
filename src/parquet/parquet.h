@@ -38,6 +38,7 @@
 
 namespace parquet_cpp {
 
+using std::map;
 using std::vector;
 using std::string;
 
@@ -133,22 +134,33 @@ void DumpSchema(std::ostream&, const vector<ColumnDescriptor>&);
 
 class SchemaFSM {
 public:
+  typedef int state_t;
   SchemaFSM() {}
 
-  void init(vector<vector<int> >& states) {
+  SchemaFSM& init(vector<vector<int> >& states) {
     states_.swap(states);
+    return *this;
+  }
+
+  SchemaFSM& ancestorMap(map<std::pair<state_t, state_t>, state_t>& m) {
+    ancestor_map_.swap(m);
+    return *this;
   }
 
   int GetEntryState() {
     return states_[ROOT_NODE][0];
   }
+
   int GetNextState(int state, int rep_level) {
     return states_[state][rep_level];
   }
 
+  int lowestCommonAncestor(int a, int b) const;
+
   void dump(std::ostream& oss) const;
 private:
   vector<vector<int> > states_;
+  map<std::pair<state_t, state_t>, state_t> ancestor_map_;
 };
 
 class SchemaHelper {
@@ -162,9 +174,13 @@ public:
   int GetMaxRepetitionLevel(int col_idx) const{
     return columns[col_idx].max_rep_level; }
 
+  int GetMaxDepth() const;
+
   const string& GetElementPath(int col_idx) const {
     return _element_paths[col_idx];
   }
+  const vector<int>& GetElementPathIds(int col_idx) const {
+    return _id_paths[col_idx]; }
 
   int GetElementId(const std::string& path) const {
     std::map<string, int>::const_iterator i = _path_to_id.find(path);
@@ -190,6 +206,7 @@ private:
   vector<string> _element_paths;
   std::map<string, int> _path_to_id;
   vector<vector<edge_t> > _edges;
+  vector<vector<int> > _id_paths; // path to field, starting from root node
 };
 
 class ColumnReader;
@@ -221,6 +238,16 @@ class ValueBatch {
   vector<int>& RepetitionLevels() {
     return rep_levels_; }
 
+  int repetitionLevel(int idx) const {
+    if (idx < rep_levels_.size()) return rep_levels_[idx];
+    return 0;
+  }
+
+  int definitionLevel(int idx) const {
+    if (idx < def_levels_.size()) return def_levels_[idx];
+    return 0;
+  }
+  
  private:
   friend class ColumnReader;
   int max_def_level_;
@@ -354,6 +381,7 @@ public:
 
   const ColumnDescriptor& GetColumnDescriptor(int column_id);
   ValueBatch& GetColumnValues(int column_id);
+  ValueBatch& GetColumnValues(const string& column_path);
 
   void syncColumnsBoundray();
   int  LoadColumnData(int fid, int num_records);
@@ -375,16 +403,19 @@ private:
 class RecordConvertor {
 public:
   virtual void startRecord() = 0;
+  virtual void startGroup(int fid) = 0;
   virtual void convertField(int fid) = 0;
+  virtual void endGroup() = 0;
   virtual void endRecord() = 0;
   virtual ~RecordConvertor(){};
 };
 
 class RecordAssembler {
 public:
-  RecordAssembler(SchemaHelper& helper, vector<int*>& field_rep_vals, 
+  RecordAssembler(SchemaHelper& helper, vector<ValueBatch*>& values, 
     RecordConvertor& convertor) :
-    helper_(helper), rep_vals_(field_rep_vals), convertor_(convertor) {
+    helper_(helper), values_(values), convertor_(convertor) {
+    values_idx_.resize(values.size());
   }
 
   void selectOutputColumns(const vector<string>& columns) {
@@ -394,10 +425,15 @@ public:
   int assemble();
   
 private:
-  vector<int*>& rep_vals_;
+  vector<int> values_idx_;
+  vector<ValueBatch*> values_;
   SchemaHelper& helper_;
   RecordConvertor& convertor_;
   SchemaFSM fsm_;
+  std::stack<int> field_stack_;
+
+  void _return_to_level(int lvl);
+  void _move_to_level(int lvl, int fid, int pid);
 };
 
 inline bool ColumnReader::HasNext() {

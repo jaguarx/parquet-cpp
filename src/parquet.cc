@@ -498,7 +498,31 @@ void SchemaHelper::init_() {
   _child_to_parent.resize(columns.size());
   _parent_to_child.resize(columns.size());
   _element_paths.resize(columns.size());
+  _id_paths.resize(columns.size());
   _rebuild_tree(ROOT_NODE, 0, 0, "");
+  for(int fid = 0; fid < columns.size(); ++fid) {
+    int parent = _child_to_parent[fid];
+    vector<int>& path = _id_paths[fid];
+    path.insert(path.begin(), parent);
+    while (parent != ROOT_NODE) {
+      parent = _child_to_parent[parent];
+      path.insert(path.begin(), parent);
+    }
+  }
+  for(int fid = 0; fid < columns.size(); ++fid) {
+    printf("%d : ", fid);
+    const vector<int>& path = _id_paths[fid];
+    for(int i=0; i<path.size(); ++i)
+      printf("%d ", path[i]);
+    printf("\n");
+  }
+}
+
+int SchemaHelper::GetMaxDepth() const {
+  int ret = 0;
+  for (int i=0; i<_id_paths.size(); ++i)
+    ret = _id_paths[i].size() < ret ? ret : _id_paths[i].size();
+  return ret;
 }
 
 int SchemaHelper::_rebuild_tree(int fid, int rep_level, int def_level, 
@@ -567,6 +591,19 @@ void SchemaHelper::BuildFullFSM() {
   }
 }
 
+static pair<int, int> _lca_key(int v1, int v2) {
+  if (v1 < v2) return make_pair(v1, v2);
+  return make_pair(v2, v1);
+}
+
+static int _lca(const vector<int>& p1, const vector<int>& p2) {
+  int i = 0;
+  while (i< p1.size() && i < p2.size() && p1[i] == p2[i])
+    i++;
+  if (i == 0) return 0;
+  return p1[i-1];
+}
+
 void SchemaHelper::BuildFSM(const vector<string>& fields, SchemaFSM& fsm) {
   BuildFullFSM();
   vector<int> fids;
@@ -586,18 +623,26 @@ void SchemaHelper::BuildFSM(const vector<string>& fields, SchemaFSM& fsm) {
     sort(fids.begin(), fids.end());
   }
   vector<vector<int> > all_edges(columns.size());
+  map<pair<int,int>, int> am;
   for (int i = 0; i < fids.size(); ++i) {
     int id = fids[i];
     int rep_lvl = GetMaxRepetitionLevel(id);
     vector<int>& edge = all_edges[id];
     edge.resize(1 + rep_lvl);
+    vector<int>& p1 = _id_paths[id];
     for( int r = 0; r <= rep_lvl; ++r) {
       int tsid = _compress_state(id, r, fids);
+      vector<int>& p2 = _id_paths[tsid];
+      int lca = _lca(p1, p2);
+      //printf(" %d : %d => %d\n", id, tsid, lca);
+      am[_lca_key(id, tsid)] = lca;
+      //id, tsid => lca
       edge[r] = tsid;
     }
   }
   all_edges[ROOT_NODE].push_back(fids[0]);
-  fsm.init(all_edges);
+  fsm.init(all_edges)
+    .ancestorMap(am);
 }
 
 int SchemaHelper::_follow_fsm(int field_id, int rep_lvl) {
@@ -640,6 +685,14 @@ void SchemaFSM::dump(ostream& oss) const {
     }
     oss << "}\n";
   }
+}
+
+int SchemaFSM::lowestCommonAncestor(int a, int b) const {
+  if (a == b) return a;
+  pair<state_t, state_t> k = _lca_key(a, b);
+  map<std::pair<state_t, state_t>, state_t>::const_iterator i = ancestor_map_.find(k);
+  if (i == ancestor_map_.end()) return 0; //return root node
+  return i->second;
 }
 
 ParquetFileReader::ParquetFileReader(const string& path)
@@ -782,15 +835,48 @@ bool ColumnChunkGenerator::NextReader(shared_ptr<ColumnReader>& reader)
   return false;
 }
 
+void RecordAssembler::_return_to_level(int lvl) {
+  while(field_stack_.size()>lvl) {
+    convertor_.endGroup();
+    field_stack_.pop();
+  }
+}
+
+void RecordAssembler::_move_to_level(int lvl, int fid, int lca) {
+  int lca_depth = helper_.GetElementPathIds(lca).size();
+  while(field_stack_.size()>lca_depth) {
+    convertor_.endGroup();
+    field_stack_.pop();
+  }
+  const vector<int>& p = helper_.GetElementPathIds(fid);
+  while(field_stack_.size()<lvl) {
+    int id = p[field_stack_.size()];
+    convertor_.startGroup(id);
+    field_stack_.push(id);
+  }
+  field_stack_.push(fid);
+}
+
 int RecordAssembler::assemble() {
   int entry_state = fsm_.GetEntryState();
   int fid = entry_state;
   convertor_.startRecord();
   while ( fid != ROOT_NODE ) { 
-    int rep_lvl = rep_vals_[fid][1];
-    convertor_.convertField(fid);
-    rep_vals_[fid]++;
+    int& fid_idx = values_idx_[fid];
+    bool is_null = values_[fid]->isNull(fid_idx);
+    int rep_lvl = values_[fid]->repetitionLevel(fid_idx+1);
     int nfid = fsm_.GetNextState(fid, rep_lvl);
+    int pid = fsm_.lowestCommonAncestor(fid, nfid);
+
+    if (!is_null) {
+      _move_to_level(helper_.GetElementPathIds(fid).size(), fid, pid);
+      convertor_.convertField(fid);
+    } else {
+      _move_to_level(values_[fid]->definitionLevel(fid_idx), fid, pid);
+    }
+    fid_idx ++;
+    printf(" %d => %d, rep: %d, pid: %d : \n", fid, nfid, rep_lvl, pid);
+    //convertor_.convertField(fid);
     fid = nfid;
   }
   convertor_.endRecord();
