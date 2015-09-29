@@ -293,10 +293,13 @@ class ColumnReader {
   int GetValueBatch(ValueBatch& batch, int max_values);
   int GetRecordValueBatch(ValueBatch& batch,
     vector<int>& record_offsets, int num_records);
+  template<typename T>
+  int GetRecordValueBatch(ValueBatch& batch,
+    vector<int>& record_offsets, int num_records, const T& bitmask);
 
   // skip values
   int skipValue(int count);
-  int skipCurrentRecord();
+  int skipRecords(int count);
 
   int MaxDefinitionLevel() const {
     return this->max_definition_level_; }
@@ -394,6 +397,9 @@ public:
 
   void syncColumnsBoundray();
   int  LoadColumnData(int fid, int num_records);
+  template<typename T>
+  int  LoadColumnData(int fid, int num_records, const T& bitmap);
+
   SchemaHelper& GetHelper() { return *helper_; }
   vector<int*>& RepetitionLevels() {
     return rep_levels_; }

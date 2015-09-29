@@ -344,6 +344,49 @@ int ColumnReader::skipValue(int values) {
   return values;
 }
 
+int ColumnReader::skipRecords(int num_records) {
+  int num_values = 0;
+  int values = num_buffered_values_;
+  if (max_repetition_level_ > 0) { 
+    if (saved_rep_level_ >= 0) { 
+      num_values ++;
+      saved_rep_level_ = -1;
+    }    
+    do { 
+      if (!repetition_level_decoder_->Get(&saved_rep_level_)) break;
+      num_values ++;
+      values --;
+      if (saved_rep_level_ == 0) num_records --;
+    } while (num_records > 0 && values > 0);
+  }
+  if (max_definition_level_ > 0) { 
+    int state = 0, start_p = 0; 
+    int values = 0;
+    int def_level = 0;
+    for (int i=0; i<num_values; ++i) {
+      if (!definition_level_decoder_->Get(&def_level))
+        break;
+      values ++;
+      bool is_null = def_level < max_definition_level_;
+      switch (state) {
+      case 0: if (is_null) state = 2;
+              else { state = 1; start_p = i; } break;
+      case 1: if (is_null) {
+                skipValue(i - start_p);
+                state = 2;
+              } break;
+      case 2: if (!is_null) { state = 1; start_p = i; }
+      }
+    }
+    if ( state == 1 )
+      skipValue(values - start_p);
+    num_values = values;
+  } else {
+    skipValue(num_values);
+  }
+  return num_values;
+}
+
 int ColumnReader::decodeRepetitionLevels(
     vector<int32_t>& buf,
     int value_count)
@@ -782,6 +825,47 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records) {
     if (offsets.size() == num_records) break;
     if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
     records_remains = num_records - offsets.size();
+  } while (records_remains > 0);
+  rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]);
+  return values;
+}
+
+template<>
+int ParquetFileReader::LoadColumnData(int fid, int num_records, 
+  const vector<bool>& bitmask)
+{
+  const ColumnDescriptor& desc = helper_->columns[fid];
+  if (desc.element.num_children > 0)
+    return 0;
+  if (rep_levels_[fid] == NULL) {
+    rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]); }
+  if (readers_[fid].get() == NULL) {
+    chunk_generators_[fid].reset(new ColumnChunkGenerator(file_path_, metadata_,
+      *helper_));
+    chunk_generators_[fid]->selectColumn(fid);
+    if (!chunk_generators_[fid]->NextReader(readers_[fid]))
+      return 0;
+    if (!readers_[fid]->HasNext())
+      return 0;
+  }
+  int records_remains = num_records;
+  int values = 0;
+  vector<int> offsets;
+  ColumnReader& reader = *readers_[fid];
+  int idx = 0;
+  do {
+    int idx2 = idx;
+    while (bitmask[idx2] && idx2 < bitmask.size()) ++idx2;
+    records_remains -= (idx2 - idx);
+    if (idx < idx2) reader.skipRecords(idx2 - idx);
+    idx = idx2;
+    while (!bitmask[idx2] && idx2 < bitmask.size()) ++idx2;
+    int offsize = offsets.size();
+    values += reader.GetRecordValueBatch(values_[fid], offsets, idx2 - idx);
+    idx += (offsets.size() - offsize);
+    if (offsets.size() == num_records) break;
+    if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
+    records_remains -= (offsets.size() - offsize);
   } while (records_remains > 0);
   rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]);
   return values;
