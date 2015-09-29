@@ -137,13 +137,12 @@ public:
   typedef int state_t;
   SchemaFSM() {}
 
-  SchemaFSM& init(vector<vector<int> >& states) {
+  SchemaFSM& init(vector<vector<int> >& states, 
+    vector<vector<int> >& deflvl_to_depth,
+    vector<vector<int> >& next_levels) {
     states_.swap(states);
-    return *this;
-  }
-
-  SchemaFSM& ancestorMap(map<std::pair<state_t, state_t>, state_t>& m) {
-    ancestor_map_.swap(m);
+    deflvl_to_depth_.swap(deflvl_to_depth);
+    next_levels_.swap(next_levels);
     return *this;
   }
 
@@ -155,12 +154,19 @@ public:
     return states_[state][rep_level];
   }
 
-  int lowestCommonAncestor(int a, int b) const;
+  int depthOfDefLevel(int fid, int def_lvl) const {
+    return deflvl_to_depth_[fid][def_lvl]; }
+
+  int nextLevel(int fid, int rep_lvl) const {
+    return next_levels_[fid][rep_lvl]; }
 
   void dump(std::ostream& oss) const;
 private:
+  
   vector<vector<int> > states_;
-  map<std::pair<state_t, state_t>, state_t> ancestor_map_;
+  vector<vector<int> > next_levels_;
+  vector<vector<int> > deflvl_to_depth_;
+
 };
 
 class SchemaHelper {
@@ -200,6 +206,9 @@ private:
   int _rebuild_tree(int fid, int rep_level, int def_level, const string& path);
   int _follow_fsm(int fid, int rep_lvl);
   int _compress_state(int fid, int rep_lvl, const vector<int>& fields);
+
+  int _parent_of_level(int fid, int lvl);
+  int _last_child_of_parent(int pid, const vector<int>& fids);
 
   vector<int> _child_to_parent;
   vector<vector<int> > _parent_to_child;
@@ -404,7 +413,7 @@ class RecordConvertor {
 public:
   virtual void startRecord() = 0;
   virtual void startGroup(int fid) = 0;
-  virtual void convertField(int fid) = 0;
+  virtual void convertField(int fid, int fid_idx) = 0;
   virtual void endGroup() = 0;
   virtual void endRecord() = 0;
   virtual ~RecordConvertor(){};
@@ -432,8 +441,6 @@ private:
   SchemaFSM fsm_;
   std::stack<int> field_stack_;
 
-  void _return_to_level(int lvl);
-  void _move_to_level(int lvl, int fid, int pid);
 };
 
 inline bool ColumnReader::HasNext() {

@@ -41,20 +41,45 @@ void dump_values(ostream& oss,
 
 class DumpConvertor : public RecordConvertor {
 public:
-  DumpConvertor(SchemaHelper& helper) : helper_(helper) {
+  DumpConvertor(SchemaHelper& helper, vector<ValueBatch*>& values)
+  : helper_(helper), values_(values) {
+    values_idx_.resize(values_.size());
   }
   void startRecord() {
     cout << "---\n";
+    indent_ = 0;
   }
 
-  void convertField(int fid) {
-    cout << helper_.columns[fid].element.name << "  " << (fid) << "\n";
+  void startGroup(int fid) {
+    indent_ ++;
+    for (int i=0; i<indent_; ++i) cout << "  ";
+    cout << helper_.columns[fid].element.name << "\n";
+  }
+  void convertField(int fid, int idx) {
+    for (int i=0; i<=indent_; ++i) cout << "  ";
+    cout << helper_.columns[fid].element.name << " ";
+    const ColumnDescriptor& desc = helper_.columns[fid];
+    ValueBatch& batch = *(values_[fid]);
+    switch (desc.element.type) {
+    case Type::INT32: cout << batch.Get<int32_t>(idx); break;
+    case Type::INT64: cout << batch.Get<int64_t>(idx); break;
+    case Type::FLOAT: cout << batch.Get<float>(idx); break;
+    case Type::DOUBLE: cout << batch.Get<double>(idx); break;
+    case Type::BYTE_ARRAY: cout << batch.Get<ByteArray>(idx); break;
+    default:
+      cerr << "dump doesn't suppor type " << desc.element.type << "\n";
+    }
+    cout << "\n";
   }
 
+  void endGroup() { indent_ --; }
   void endRecord() {
   }
 
 private:
+  int indent_;
+  vector<int> values_idx_;
+  vector<ValueBatch*> values_;
   SchemaHelper& helper_;
 };
 
@@ -201,30 +226,44 @@ int _search(int argc, char** argv) {
 }
 
 int _cat(int argc, char** argv) {
-  int col_id = 1;
   string filename;
-  vector<string> columns;
+  int count = 2;
 
   int opt;
   while ((opt = getopt(argc, argv, "c:v:f:")) != -1) {
     switch(opt) {
-    case 'c': col_id = atoi(optarg); break;
+    case 'c': count = atoi(optarg); break;
     case 'f': filename = optarg; break;
     }   
   }
 
-  columns.reserve( argc - 1 );
-  for (int i = optind; i < argc ; ++i) 
-    columns.push_back(argv[i]);
-
   ParquetFileReader reader(filename);
-  int count = 2;
-  for (int i=1; i<reader.GetHelper().columns.size(); ++i)
+  SchemaHelper& helper = reader.GetHelper();
+
+  vector<ValueBatch*> values(helper.columns.size());
+  for(int i=1; i<helper.columns.size(); ++i)
     reader.LoadColumnData(i, count);
 
-  DumpConvertor dump(reader.GetHelper());
-  RecordAssembler ra = RecordAssembler(reader.GetHelper(),
-    reader.RepetitionLevels(), dump);
+  vector<string> columns;
+  columns.reserve( argc - 1 );
+
+  if (optind < argc) {
+    for (int i = optind; i < argc ; ++i) {
+      int fid = reader.GetHelper().GetElementId(argv[i]);
+      if (fid < 0) {
+        cerr << "unknown field : " << argv[i] << "\n";
+        return 0;
+      }
+      columns.push_back(argv[i]);
+      values[fid] = &(reader.GetColumnValues(fid));
+    }
+  } else {
+    for (int i=1; i<helper.columns.size(); ++i)
+      values[i] = &(reader.GetColumnValues(i));
+  }
+
+  DumpConvertor dump(helper, values);
+  RecordAssembler ra = RecordAssembler(helper, values, dump);
   ra.selectOutputColumns(columns);
 
   while (count > 0) {
