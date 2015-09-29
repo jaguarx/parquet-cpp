@@ -345,19 +345,20 @@ int ColumnReader::skipValue(int values) {
 }
 
 int ColumnReader::skipRecords(int num_records) {
-  int num_values = 0;
+  int num_values = num_records;
   int values = num_buffered_values_;
   if (max_repetition_level_ > 0) { 
+    num_values = 0;
     if (saved_rep_level_ >= 0) { 
-      num_values ++;
       saved_rep_level_ = -1;
-    }    
-    do { 
+      num_values ++;
+    }   
+    do {
       if (!repetition_level_decoder_->Get(&saved_rep_level_)) break;
       num_values ++;
-      values --;
       if (saved_rep_level_ == 0) num_records --;
-    } while (num_records > 0 && values > 0);
+    } while (num_records >= 0);
+    num_values -= 1;
   }
   if (max_definition_level_ > 0) { 
     int state = 0, start_p = 0; 
@@ -366,21 +367,10 @@ int ColumnReader::skipRecords(int num_records) {
     for (int i=0; i<num_values; ++i) {
       if (!definition_level_decoder_->Get(&def_level))
         break;
-      values ++;
       bool is_null = def_level < max_definition_level_;
-      switch (state) {
-      case 0: if (is_null) state = 2;
-              else { state = 1; start_p = i; } break;
-      case 1: if (is_null) {
-                skipValue(i - start_p);
-                state = 2;
-              } break;
-      case 2: if (!is_null) { state = 1; start_p = i; }
-      }
+      if (!is_null) values++;
     }
-    if ( state == 1 )
-      skipValue(values - start_p);
-    num_values = values;
+    skipValue(values);
   } else {
     skipValue(num_values);
   }
@@ -851,18 +841,20 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records,
   int records_remains = num_records;
   int values = 0;
   vector<int> offsets;
+  offsets.reserve(num_records);
   ColumnReader& reader = *readers_[fid];
   int idx = 0;
   do {
     int idx2 = idx;
-    while (bitmask[idx2] && idx2 < bitmask.size()) ++idx2;
+    while (bitmask[idx2] && idx2 < bitmask.size() && idx2 < num_records) ++idx2;
     records_remains -= (idx2 - idx);
     if (idx < idx2) reader.skipRecords(idx2 - idx);
     idx = idx2;
-    while (!bitmask[idx2] && idx2 < bitmask.size()) ++idx2;
+    while (!bitmask[idx2] && idx2 < bitmask.size() && idx2 < num_records) ++idx2;
     int offsize = offsets.size();
     values += reader.GetRecordValueBatch(values_[fid], offsets, idx2 - idx);
     idx += (offsets.size() - offsize);
+    if (idx == bitmask.size()) break;
     if (offsets.size() == num_records) break;
     if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
     records_remains -= (offsets.size() - offsize);
