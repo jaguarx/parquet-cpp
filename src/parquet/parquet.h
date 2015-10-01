@@ -137,7 +137,7 @@ public:
   typedef int state_t;
   SchemaFSM() {}
 
-  SchemaFSM& init(vector<vector<int> >& states, 
+  SchemaFSM& init(vector<vector<int> >& states,
     vector<vector<int> >& deflvl_to_depth,
     vector<vector<int> >& next_levels) {
     states_.swap(states);
@@ -146,11 +146,11 @@ public:
     return *this;
   }
 
-  int GetEntryState() {
+  int GetEntryState() const {
     return states_[ROOT_NODE][0];
   }
 
-  int GetNextState(int state, int rep_level) {
+  int GetNextState(int state, int rep_level) const {
     return states_[state][rep_level];
   }
 
@@ -161,8 +161,8 @@ public:
     return next_levels_[fid][rep_lvl]; }
 
   void dump(std::ostream& oss) const;
+
 private:
-  
   vector<vector<int> > states_;
   vector<vector<int> > next_levels_;
   vector<vector<int> > deflvl_to_depth_;

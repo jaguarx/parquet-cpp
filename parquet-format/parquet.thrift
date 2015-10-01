@@ -21,7 +21,7 @@
  * File format description for the parquet file format
  */
 namespace cpp parquet
-namespace java parquet.format
+namespace java org.apache.parquet.format
 
 /**
  * Types supported by Parquet.  These types are intended to be used in combination
@@ -93,7 +93,14 @@ enum ConvertedType {
    * as an INT32 physical type.
    */
   TIME_MILLIS = 7;
-  // RESERVED = 8; 
+
+  /**
+   * A time.
+   *
+   * The total number of microseconds since midnight.  The value is stored as
+   * an INT64 physical type.
+   */
+  TIME_MICROS = 8;
 
   /**
    * A date/time combination
@@ -102,7 +109,14 @@ enum ConvertedType {
    * a physical type of INT64.
    */
   TIMESTAMP_MILLIS = 9; 
-  // RESERVED = 10;
+
+  /**
+   * A date/time combination
+   *
+   * Date and time recorded as microseconds since the Unix epoch.  The value is
+   * stored as an INT64 physical type.
+   */
+  TIMESTAMP_MICROS = 10;
 
 
   /** 
@@ -430,6 +444,22 @@ struct SortingColumn {
 }
 
 /**
+ * statistics of a given page type and encoding
+ */
+struct PageEncodingStats {
+
+  /** the page type (data/dic/...) **/
+  1: required PageType page_type;
+
+  /** encoding of the page **/
+  2: required Encoding encoding;
+
+  /** number of pages of this type with this encoding **/
+  3: required i32 count;
+
+}
+
+/**
  * Description for column metadata
  */
 struct ColumnMetaData {
@@ -469,6 +499,11 @@ struct ColumnMetaData {
 
   /** optional statistics for this column chunk */
   12: optional Statistics statistics;
+
+  /** Set of all encodings used for pages in this column chunk.
+   * This information can be used to determine if all data pages are
+   * dictionary encoded for example **/
+  13: optional list<PageEncodingStats> encoding_stats;
 }
 
 struct ColumnChunk {
@@ -488,6 +523,9 @@ struct ColumnChunk {
 }
 
 struct RowGroup {
+  /** Metadata for each column chunk in this row group.
+   * This list must have the same order as the SchemaElement list in FileMetaData.
+   **/
   1: required list<ColumnChunk> columns
 
   /** Total byte size of all the uncompressed column data in this row group **/
