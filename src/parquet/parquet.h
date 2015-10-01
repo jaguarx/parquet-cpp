@@ -224,13 +224,13 @@ class ValueBatch {
  public:
   ValueBatch() {}
   void BindDescriptor(ColumnDescriptor& desc);
-  bool isNull(int index) {
+  bool isNull(int index) const {
     int def_level = def_levels_[index];
     return def_level < max_def_level_;
   }
   template<typename T>
-  const T& Get(int index) {
-    T* base = reinterpret_cast<T*>(&values_[0]);
+  const T& Get(int index) const {
+    const T* base = reinterpret_cast<const T*>(&values_[0]);
     return base[index]; }
 
   uint8_t* valueAddress(int offset) {
@@ -256,11 +256,16 @@ class ValueBatch {
     if (idx < def_levels_.size()) return def_levels_[idx];
     return 0;
   }
-  
+
+  parquet::Type::type type() const {
+    return type_;
+  }
+ 
  private:
   friend class ColumnReader;
   int max_def_level_;
   int value_byte_size_;
+  parquet::Type::type type_;
   vector<uint32_t> values_;
   vector<int> rep_levels_;
   vector<int> def_levels_;
@@ -514,6 +519,7 @@ inline void DeserializeThriftMsg(const uint8_t* buf, uint32_t* len, T* deseriali
   *len = *len - bytes_left;
 }
 
+string dump_value(const ValueBatch& batch, int idx);
 }
 
 std::ostream& operator<<(std::ostream& oss, parquet::FieldRepetitionType::type t);

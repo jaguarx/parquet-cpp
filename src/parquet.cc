@@ -347,21 +347,29 @@ int ColumnReader::skipValue(int values) {
 int ColumnReader::skipRecords(int num_records) {
   int num_values = num_records;
   int values = num_buffered_values_;
-  if (max_repetition_level_ > 0) { 
+
+  if (max_repetition_level_ > 0) {
     num_values = 0;
-    if (saved_rep_level_ >= 0) { 
+    if (saved_rep_level_ >= 0) {
       saved_rep_level_ = -1;
       num_values ++;
-    }   
+    } 
     do {
-      if (!repetition_level_decoder_->Get(&saved_rep_level_)) break;
-      num_values ++;
+      if (!repetition_level_decoder_->Get(&saved_rep_level_)) {
+        saved_rep_level_ = -1;
+        break;
+      }
       if (saved_rep_level_ == 0) num_records --;
-    } while (num_records >= 0);
-    num_values -= 1;
+      if (num_records >=0) {
+        num_values ++;
+        values --;
+      }
+    } while (num_records >= 0 && values > 0);
+    num_buffered_values_ -= num_values;
   }
-  if (max_definition_level_ > 0) { 
-    int state = 0, start_p = 0; 
+
+  if (max_definition_level_ > 0) {
+    int state = 0, start_p = 0;
     int values = 0;
     int def_level = 0;
     for (int i=0; i<num_values; ++i) {
@@ -450,14 +458,15 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
     if (saved_rep_level_ >= 0) {
       buf.push_back(saved_rep_level_);
       saved_rep_level_ = -1;
+      values --;
     }
     record_offsets.reserve(num_records);
-    do {
+    while (record_offsets.size() <= num_records && values > 0) {
       if (!repetition_level_decoder_->Get(&saved_rep_level_)) break;
       if (saved_rep_level_ == 0) record_offsets.push_back((int32_t)buf.size());
       buf.push_back(saved_rep_level_);
       values --;
-    } while (record_offsets.size() <= num_records && values > 0);
+    }
     num_values = buf.size();
     batch.rep_levels_.swap(buf);
   }
@@ -501,6 +510,7 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
 }
 
 void ValueBatch::BindDescriptor(ColumnDescriptor& desc) {
+  type_ = desc.element.type;
   if (desc.element.num_children == 0)
     value_byte_size_ = value_byte_size(desc.element.type);
   else 
@@ -821,7 +831,7 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records) {
 }
 
 template<>
-int ParquetFileReader::LoadColumnData(int fid, int num_records, 
+int ParquetFileReader::LoadColumnData(int fid, int num_records,
   const vector<bool>& bitmask)
 {
   const ColumnDescriptor& desc = helper_->columns[fid];
@@ -1009,13 +1019,35 @@ void DumpSchema(ostream& oss, const vector<ColumnDescriptor>& columns) {
               child_stack.front()--;
           } while (!child_stack.empty() && child_stack.front() == 0);
         }
-      } else {
-        oss << "group " << element.name << " {\n";
-        child_stack.push_front(element.num_children);
-      }
+    } else {
+      oss << "group " << element.name << " {\n";
+      child_stack.push_front(element.num_children);
     }
-    oss << "}\n";
   }
+  oss << "}\n";
+}
+
+string dump_value(const ValueBatch& batch, int idx) {
+  stringstream oss;
+  oss << batch.repetitionLevel(idx) << ':'
+      << batch.repetitionLevel(idx) << ':';
+
+  if (batch.isNull(idx)) {
+    switch (batch.type()) {
+    case Type::INT32: oss << batch.Get<int32_t>(idx); break;
+    case Type::INT64: oss << batch.Get<int64_t>(idx); break;
+    case Type::FLOAT: oss << batch.Get<float>(idx); break;
+    case Type::DOUBLE: oss << batch.Get<double>(idx); break;
+    case Type::BYTE_ARRAY: oss << batch.Get<ByteArray>(idx); break;
+    default:
+      cerr << __FILE__ << ':' << __LINE__ << " doesn't support type "
+           << batch.type() << " yet\n";
+    }
+  } else {
+    oss << "<NULL>";
+  }
+  return oss.str();
+}
 }
 
 ostream& operator<<(ostream& oss, const parquet_cpp::ByteArray& a) {
