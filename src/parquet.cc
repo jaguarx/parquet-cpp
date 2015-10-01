@@ -353,14 +353,14 @@ int ColumnReader::skipRecords(int num_records) {
     if (saved_rep_level_ >= 0) {
       saved_rep_level_ = -1;
       num_values ++;
-    } 
+    }
     do {
       if (!repetition_level_decoder_->Get(&saved_rep_level_)) {
         saved_rep_level_ = -1;
         break;
       }
       if (saved_rep_level_ == 0) num_records --;
-      if (num_records >=0) {
+      if (num_records >= 0) {
         num_values ++;
         values --;
       }
@@ -1030,9 +1030,9 @@ void DumpSchema(ostream& oss, const vector<ColumnDescriptor>& columns) {
 string dump_value(const ValueBatch& batch, int idx) {
   stringstream oss;
   oss << batch.repetitionLevel(idx) << ':'
-      << batch.repetitionLevel(idx) << ':';
+      << batch.definitionLevel(idx) << ':';
 
-  if (batch.isNull(idx)) {
+  if (!batch.isNull(idx)) {
     switch (batch.type()) {
     case Type::INT32: oss << batch.Get<int32_t>(idx); break;
     case Type::INT64: oss << batch.Get<int64_t>(idx); break;

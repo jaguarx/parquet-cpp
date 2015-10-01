@@ -225,6 +225,7 @@ class ValueBatch {
   ValueBatch() {}
   void BindDescriptor(ColumnDescriptor& desc);
   bool isNull(int index) const {
+    if (index >= def_levels_.size()) return true;
     int def_level = def_levels_[index];
     return def_level < max_def_level_;
   }
@@ -432,7 +433,7 @@ public:
 
 class RecordAssembler {
 public:
-  RecordAssembler(SchemaHelper& helper, vector<ValueBatch*>& values, 
+  RecordAssembler(SchemaHelper& helper, vector<ValueBatch*>& values,
     RecordConvertor& convertor) :
     helper_(helper), values_(values), convertor_(convertor) {
     values_idx_.resize(values.size());
