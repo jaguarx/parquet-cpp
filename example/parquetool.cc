@@ -7,10 +7,12 @@
 #include <unistd.h>
 
 #include "example_util.h"
+#include "util/json_convertor.h"
 
 using namespace parquet;
 using namespace parquet_cpp;
 using namespace std;
+using namespace boost;
 
 static inline void dump_bytes(ostream& oss, uint8_t* val, int len) {
   for(int i=0; i<len; ++i)
@@ -38,50 +40,6 @@ void dump_values(ostream& oss,
     }
   }
 }
-
-class DumpConvertor : public RecordConvertor {
-public:
-  DumpConvertor(SchemaHelper& helper, vector<ValueBatch*>& values)
-  : helper_(helper), values_(values) {
-    values_idx_.resize(values_.size());
-  }
-  void startRecord() {
-    cout << "---\n";
-    indent_ = 0;
-  }
-
-  void startGroup(int fid) {
-    indent_ ++;
-    for (int i=0; i<indent_; ++i) cout << "  ";
-    cout << helper_.columns[fid].element.name << "\n";
-  }
-  void convertField(int fid, int idx) {
-    for (int i=0; i<=indent_; ++i) cout << "  ";
-    cout << helper_.columns[fid].element.name << " ";
-    const ColumnDescriptor& desc = helper_.columns[fid];
-    ValueBatch& batch = *(values_[fid]);
-    switch (desc.element.type) {
-    case Type::INT32: cout << batch.Get<int32_t>(idx); break;
-    case Type::INT64: cout << batch.Get<int64_t>(idx); break;
-    case Type::FLOAT: cout << batch.Get<float>(idx); break;
-    case Type::DOUBLE: cout << batch.Get<double>(idx); break;
-    case Type::BYTE_ARRAY: cout << batch.Get<ByteArray>(idx); break;
-    default:
-      cerr << "dump doesn't suppor type " << desc.element.type << "\n";
-    }
-    cout << "\n";
-  }
-
-  void endGroup() { indent_ --; }
-  void endRecord() {
-  }
-
-private:
-  int indent_;
-  vector<int> values_idx_;
-  vector<ValueBatch*> values_;
-  SchemaHelper& helper_;
-};
 
 struct equal_int64 {
   int64_t v_;
@@ -142,10 +100,12 @@ int _dump_columns(int argc, char** argv) {
   int batch_size = 128;
   ParquetFileReader reader(argv[optind]);
   const ColumnDescriptor& desc = reader.GetColumnDescriptor(col_idx);
-  
+ 
+  vector<bool> bitmask(batch_size);
+  bitmask[0] = true; 
   int count = 0;
   do {
-    count = reader.LoadColumnData(col_idx, batch_size);
+    count = reader.LoadColumnData(col_idx, batch_size);//, bitmask);
     ValueBatch& batch = reader.GetColumnValues(col_idx);
     switch (desc.element.type) {
     //case Type::BOOLEAN: _batch_dump<bool>(*reader, count); break;
@@ -190,57 +150,52 @@ int _dump_column_chunk(int argc, char** argv) {
   return 0;
 }
 
-int _search(int argc, char** argv) {
-  int filter_value = 0;
-  int col_id = 1;
-  string filename;
-  vector<string> columns;
+class WrapppedDump : public json::JsonConvertor {
+public:
+  WrapppedDump(bool pretty, SchemaHelper& helper, vector<ValueBatch*>& values)
+  : JsonConvertor(cout, helper, values, pretty) {}
 
-  int opt;
-  while ((opt = getopt(argc, argv, "c:v:f:")) != -1) {
-    switch(opt) {
-    case 'c': col_id = atoi(optarg); break;
-    case 'v': filter_value = atoi(optarg); break;
-    case 'f': filename = optarg; break;
-    }
+  void endRecord() {
+    JsonConvertor::endRecord();
+    cout << "\n";
   }
-
-  vector<expr_node_t> nodes;
-  nodes.push_back(expr_node_t(col_id));
-  bool_expr_tree_t t(nodes);
-
-  SchemaHelper helper(filename);
-  columns.reserve( argc - 1 );
-  for (int i = optind; i < argc ; ++i) {
-    columns.push_back(argv[i]);
-  }
-
-  //DumpColumnConverterFactory fac(filter_value, t, helper, filename);
-  //RecordAssembler ra = RecordAssembler(helper, fac);
-  //ra.selectOutputColumns(columns);
-
-  //while (ra.assemble()) {
-
-  //}
-  return 0; 
-}
+};
 
 int _cat(int argc, char** argv) {
   string filename;
   int count = 2;
+  int start = 0;
+  int json_pretty = 1;
 
   int opt;
-  while ((opt = getopt(argc, argv, "c:v:f:")) != -1) {
+  while ((opt = getopt(argc, argv, "s:c:f:j:")) != -1) {
     switch(opt) {
     case 'c': count = atoi(optarg); break;
+    case 's': start = atoi(optarg); break;
     case 'f': filename = optarg; break;
+    case 'j': json_pretty = atoi(optarg); break;
     }   
   }
 
   ParquetFileReader reader(filename);
   SchemaHelper& helper = reader.GetHelper();
 
+  int batch_size = 128;
+
   vector<ValueBatch*> values(helper.columns.size());
+  vector<bool> bitmask(batch_size);
+  for (int i=0; i<batch_size; ++i) bitmask[i] = true;
+
+  if (start > 0) {
+    while (start >= batch_size) {
+      for(int i=1; i<helper.columns.size(); ++i)
+        reader.LoadColumnData(i, batch_size, bitmask);
+      start -= batch_size;
+    }
+    if (start > 0)
+      for(int i=1; i<helper.columns.size(); ++i)
+        reader.LoadColumnData(i, start, bitmask);
+  }
   for(int i=1; i<helper.columns.size(); ++i)
     reader.LoadColumnData(i, count);
 
@@ -258,11 +213,12 @@ int _cat(int argc, char** argv) {
       values[fid] = &(reader.GetColumnValues(fid));
     }
   } else {
-    for (int i=1; i<helper.columns.size(); ++i)
+    for (int i=1; i<helper.columns.size(); ++i) {
       values[i] = &(reader.GetColumnValues(i));
+    }
   }
 
-  DumpConvertor dump(helper, values);
+  WrapppedDump dump((json_pretty > 0)?true:false, helper, values);
   RecordAssembler ra = RecordAssembler(helper, values, dump);
   ra.selectOutputColumns(columns);
 
@@ -275,19 +231,20 @@ int _cat(int argc, char** argv) {
 
 command_t commands[] = {
   command_t("schema", "<files>\n"
-                          "\t\tshow schema of files",
+                      "\t\tshow schema of files",
      _show_schema),
-  command_t("chunk", "-c <col_id> <file>\n"
-                          "\t\tdump column chunk info",
+  command_t("chunk",  "-c <col_id> <file>\n"
+                      "\t\tdump column chunk info",
      _dump_column_chunk),
-  command_t("dump", "-c <col_id> <file>\n"
-                          "\t\tdump column data",
+  command_t("dump",   "-c <col_id> <file>\n"
+                      "\t\tdump column data",
      _dump_columns),
-  command_t("search",     "-c <filter_col_id> -v <value> -f <files> <output-columns>\n"
-                          "\t\tsearch and assemble matching record",
-     _search),
-  command_t("cat",        "-c <columns> <file>\n"
-                          "\t\tprint records",
+  command_t("cat",    "-j <pretty> -s <start_idx> -c count -f <file> [columns]\n"
+                      "\t\tprint records\n"
+                      "\t\t -j <pretty>     print as JSON with pretty print\n"
+                      "\t\t -s <start_idx>  print from # record\n"
+                      "\t\t -c <count>      number of records to print\n"
+                      "\t\t -f <file>       parquet file to print\n",
      _cat),
   command_t()
 };
