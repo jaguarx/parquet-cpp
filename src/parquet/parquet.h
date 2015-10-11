@@ -223,7 +223,7 @@ class ColumnReader;
 class ValueBatch {
  public:
   ValueBatch() {}
-  void BindDescriptor(ColumnDescriptor& desc);
+  void BindDescriptor(const ColumnDescriptor& desc);
   bool isNull(int index) const {
     if (index >= def_levels_.size()) return true;
     int def_level = def_levels_[index];
@@ -238,9 +238,26 @@ class ValueBatch {
     uint8_t* base = (uint8_t*)&values_[0];
     return base + offset * value_byte_size_; }
 
+  void reset(int size_hint) {
+    record_offsets_.clear(); record_offsets_.reserve(size_hint); 
+    def_levels_.clear(); def_levels_.reserve(size_hint);
+    rep_levels_.clear(); rep_levels_.reserve(size_hint);
+    values_.clear(); values_.reserve(size_hint);
+    buffer_.clear(); buffer_.reserve(8*size_hint);
+  }
+
   void resize(int values) {
     def_levels_.resize(values);
     values_.resize(1+(values*value_byte_size_)/sizeof(uint32_t)); }
+
+  vector<int>& recordOffsets() {
+    return record_offsets_;
+  }
+
+  int recordOffset(int idx) {
+    if (idx<record_offsets_.size()) return record_offsets_[idx];
+    return 0;
+  }
 
   vector<int>& DefinitionLevels() {
     return def_levels_; }
@@ -258,9 +275,16 @@ class ValueBatch {
     return 0;
   }
 
+  int recordOffset(int idx) const {
+    if (idx < record_offsets_.size()) return record_offsets_[idx];
+    return 0; }
+
   parquet::Type::type type() const {
     return type_;
   }
+
+  ValueBatch& appendNilRecords(int cnt);
+  ValueBatch& append(ValueBatch&);
  
  private:
   friend class ColumnReader;
@@ -270,6 +294,7 @@ class ValueBatch {
   vector<uint32_t> values_;
   vector<int> rep_levels_;
   vector<int> def_levels_;
+  vector<int> record_offsets_;
   vector<uint8_t> buffer_;
 };
 
@@ -297,8 +322,8 @@ class ColumnReader {
 
   // Batch interface
   int GetValueBatch(ValueBatch& batch, int max_values);
-  int GetRecordValueBatch(ValueBatch& batch,
-    vector<int>& record_offsets, int num_records);
+  int GetRecordValueBatch(ValueBatch& batch, int num_records);
+    //vector<int>& record_offsets, int num_records);
   template<typename T>
   int GetRecordValueBatch(ValueBatch& batch,
     vector<int>& record_offsets, int num_records, const T& bitmask);
@@ -434,9 +459,8 @@ public:
 class RecordAssembler {
 public:
   RecordAssembler(SchemaHelper& helper, vector<ValueBatch*>& values,
-    RecordConvertor& convertor) :
-    helper_(helper), values_(values), convertor_(convertor) {
-    values_idx_.resize(values.size());
+    vector<int>& values_idx, RecordConvertor& convertor)
+  : helper_(helper), values_(values), values_idx_(values_idx), convertor_(convertor) {
   }
 
   void selectOutputColumns(const vector<string>& columns) {
@@ -446,7 +470,7 @@ public:
   int assemble();
   
 private:
-  vector<int> values_idx_;
+  vector<int>& values_idx_;
   vector<ValueBatch*> values_;
   SchemaHelper& helper_;
   RecordConvertor& convertor_;
