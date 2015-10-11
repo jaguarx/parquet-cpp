@@ -501,7 +501,7 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
       }
     }
     if ( state == 1 ) {
-      int rc = DecodeValues(batch.valueAddress(start_p), batch.buffer_, values - start_p);
+      int rc = DecodeValues(batch.valueAddress(start_p), batch.buffer_, c2 - start_p);
       if (rc>0) non_null_values += rc;
     }
     num_buffered_values_ -= c2;
@@ -531,7 +531,7 @@ void ValueBatch::BindDescriptor(const ColumnDescriptor& desc) {
 }
 
 ValueBatch& ValueBatch::reset(int size_hint) {
-  record_offsets_.clear(); record_offsets_.reserve(size_hint); 
+  record_offsets_.clear(); record_offsets_.reserve(size_hint);
   def_levels_.clear(); def_levels_.reserve(size_hint);
   rep_levels_.clear(); rep_levels_.reserve(size_hint);
   values_.clear(); values_.reserve(size_hint * value_byte_size_ / sizeof(uint32_t));
@@ -937,8 +937,6 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records,
   }
   int records_remains = num_records;
   int values = 0;
-  vector<int> offsets;
-  offsets.reserve(num_records);
   ColumnReader& reader = *readers_[fid];
   int idx = 0;
   ValueBatch& dest = values_[fid];
