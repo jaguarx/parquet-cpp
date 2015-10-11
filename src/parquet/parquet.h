@@ -462,7 +462,7 @@ public:
   }
 
   int assemble();
-  
+
 private:
   vector<int>& values_idx_;
   vector<ValueBatch*> values_;
@@ -481,45 +481,6 @@ inline bool ColumnReader::HasNext() {
   return true;
 }
 
-//inline bool ColumnReader::GetBool(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return bool();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<bool*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-//
-//inline int32_t ColumnReader::GetInt32(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int32_t();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<int32_t*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-//
-//inline int64_t ColumnReader::GetInt64(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return int64_t();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<int64_t*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-//
-//inline float ColumnReader::GetFloat(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return float();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<float*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-//
-//inline double ColumnReader::GetDouble(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return double();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<double*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-//
-//inline ByteArray ColumnReader::GetByteArray(int* def_level, int* rep_level) {
-//  if (ReadDefinitionRepetitionLevels(def_level, rep_level)) return ByteArray();
-//  if (buffered_values_offset_ == num_decoded_values_) BatchDecode();
-//  return reinterpret_cast<ByteArray*>(&values_buffer_[0])[buffered_values_offset_++];
-//}
-
-// Deserialize a thrift message from buf/len.  buf/len must at least contain
-// all the bytes needed to store the thrift message.  On return, len will be
-// set to the actual length of the header.
 template <class T>
 inline void DeserializeThriftMsg(const uint8_t* buf, uint32_t* len, T* deserialized_msg) {
   // Deserialize msg bytes into c++ thrift msg using memory transport.
