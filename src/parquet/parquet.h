@@ -317,10 +317,9 @@ class ColumnReader {
   // Batch interface
   int GetValueBatch(ValueBatch& batch, int max_values);
   int GetRecordValueBatch(ValueBatch& batch, int num_records);
-    //vector<int>& record_offsets, int num_records);
   template<typename T>
   int GetRecordValueBatch(ValueBatch& batch,
-    vector<int>& record_offsets, int num_records, const T& bitmask);
+    int num_records, const T& bitmask);
 
   // skip values
   int skipValue(int count);

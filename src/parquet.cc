@@ -221,7 +221,7 @@ bool ColumnReader::ReadNewPage() {
     } else if (current_page_header_.type == PageType::DATA_PAGE_V2) {
       // Read data page v2
       const DataPageHeaderV2& data_page_header = current_page_header_.data_page_header_v2;
-      num_buffered_values_ = data_page_header.num_values - data_page_header.num_nulls;
+      num_buffered_values_ = data_page_header.num_values;
 
       int repetition_levels_byte_length = data_page_header.repetition_levels_byte_length;
       // repetition levels
@@ -323,8 +323,11 @@ int ColumnReader::DecodeValues(uint8_t* val_, vector<uint8_t>& buf, int count) {
     for (int i=0; i<count; ++i)
       buf_size += val[i].len;
     buf.resize(buf.size() + buf_size);
-    for (int i=0; i<count; ++i)
+    for (int i=0; i<count; ++i) {
       memcpy(&buf[pos], val[i].ptr, val[i].len);
+      val[i].ptr = &buf[pos];
+      pos += val[i].len;
+    }
     return count;
   }
   default:
@@ -446,12 +449,15 @@ int ColumnReader::GetValueBatch(ValueBatch& batch, int max_values) {
   }
   return def_values;
 }
+
 int ColumnReader::GetRecordValueBatch(ValueBatch& batch, 
-  vector<int>& record_offsets, int num_records)
+  int num_records)
 {
+  if (num_records == 0) return 0;
+  vector<int>& record_offsets = batch.recordOffsets();
   int num_values = num_records;
-  int values = num_buffered_values_;
   if (max_repetition_level_ > 0) {
+    int values = num_buffered_values_;
     vector<int32_t> buf;
     buf.reserve(num_records);
 
@@ -474,29 +480,36 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
   batch.resize(num_values);
 
   if (max_definition_level_ > 0) {
-    int state = 0, start_p = 0;
     int values = 0;
-    for (int i=0; i<num_values; ++i) {
+    int state = 0, start_p = 0;
+    int c2 = 0;
+    int non_null_values = 0;
+    for (int i=0; i<num_values && i<num_buffered_values_; ++i) {
       if (!definition_level_decoder_->Get(&batch.def_levels_[i]))
         break;
-      values ++; 
       bool is_null = batch.def_levels_[i] < max_definition_level_;
+      c2 ++;
       switch (state) {
       case 0: if (is_null) state = 2;
               else { state = 1; start_p = i; } break;
       case 1: if (is_null) {
-                DecodeValues(batch.valueAddress(start_p), batch.buffer_, i - start_p);
+                int rc = DecodeValues(batch.valueAddress(start_p), batch.buffer_, i - start_p);
+                if (rc>0) non_null_values += rc;
                 state = 2;
               } break;
       case 2: if (!is_null) { state = 1; start_p = i; }
       }
     }
-    if ( state == 1 )
-      DecodeValues(batch.valueAddress(start_p), batch.buffer_, values - start_p);
-    num_values = values;
+    if ( state == 1 ) {
+      int rc = DecodeValues(batch.valueAddress(start_p), batch.buffer_, values - start_p);
+      if (rc>0) non_null_values += rc;
+    }
+    num_buffered_values_ -= c2;
+    num_values = c2;
   } else {
-    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
     num_values = DecodeValues(batch.valueAddress(0), batch.buffer_, num_values);
+    batch.def_levels_.resize(num_values);
+    memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
   }
   if (max_repetition_level_ == 0) {
     batch.rep_levels_.resize(num_values);
@@ -505,11 +518,10 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
     for (int i=0; i<num_values; ++i)
       record_offsets[i] = i;
   }
-  batch.rep_levels_.push_back(0);
   return num_values;
 }
 
-void ValueBatch::BindDescriptor(ColumnDescriptor& desc) {
+void ValueBatch::BindDescriptor(const ColumnDescriptor& desc) {
   type_ = desc.element.type;
   if (desc.element.num_children == 0)
     value_byte_size_ = value_byte_size(desc.element.type);
@@ -518,6 +530,78 @@ void ValueBatch::BindDescriptor(ColumnDescriptor& desc) {
   max_def_level_ = desc.max_def_level;
 }
 
+ValueBatch& ValueBatch::reset(int size_hint) {
+  record_offsets_.clear(); record_offsets_.reserve(size_hint); 
+  def_levels_.clear(); def_levels_.reserve(size_hint);
+  rep_levels_.clear(); rep_levels_.reserve(size_hint);
+  values_.clear(); values_.reserve(size_hint * value_byte_size_ / sizeof(uint32_t));
+  if (type_ == Type::BYTE_ARRAY) {
+    buffer_.clear(); buffer_.reserve(8*size_hint);
+  }
+  return *this;
+}
+
+ValueBatch& ValueBatch::appendNilRecords(int cnt) {
+  int offset = 0;
+  if (!record_offsets_.empty())
+    offset = *record_offsets_.rbegin();
+  for (int i=0; i<cnt; ++i)
+    record_offsets_.push_back(offset);
+  return *this;
+}
+
+template<typename T> T& append_vector(T& t1, T&t2) {
+  t1.reserve(t1.size() + t2.size());
+  t1.insert(t1.end(), t2.begin(), t2.end());
+  return t1;
+}
+
+ValueBatch& ValueBatch::append(ValueBatch& rhs) {
+  int old_size = def_levels_.size();
+  record_offsets_.reserve(record_offsets_.size() + rhs.record_offsets_.size());
+  for (int i=0; i<rhs.record_offsets_.size(); ++i)
+    record_offsets_.push_back(old_size + rhs.record_offsets_[i]);
+
+  append_vector(buffer_, rhs.buffer_);
+
+  int c1 = def_levels_.size() + rhs.def_levels_.size();
+  int s1 = c1 * rhs.value_byte_size_ / sizeof(uint32_t);
+  values_.resize(s1);
+
+  if (rhs.type_ == Type::BYTE_ARRAY) {
+    const uint8_t* ptr = &buffer_[0];
+    ByteArray* dst = reinterpret_cast<ByteArray*>(valueAddress(0));
+    if (dst[0].ptr != ptr) {
+      for (int i=0; i<old_size; ++i) {
+        if (isNull(i)) continue;
+        dst[i].ptr = ptr;
+        ptr += dst[i].len;
+      }
+    }
+    if (old_size > 0)
+      ptr = dst[old_size-1].ptr + dst[old_size-1].len;
+
+    dst = reinterpret_cast<ByteArray*>(valueAddress(old_size));
+    ByteArray* src = reinterpret_cast<ByteArray*>(rhs.valueAddress(0));
+    for (int i=0; i<rhs.def_levels_.size(); ++i) {
+      if (rhs.isNull(i)) {
+        dst[i].len = 0;
+        dst[i].ptr = ptr;
+      } else {
+        dst[i].len = src[i].len;
+        dst[i].ptr = ptr;
+        ptr += src[i].len;
+      }
+    }
+  } else {
+    int i1 = def_levels_.size();
+    int c2 = rhs.value_byte_size_ * rhs.def_levels_.size();
+    memcpy(valueAddress(i1), rhs.valueAddress(0), c2);
+  }
+  append_vector(rep_levels_, rhs.rep_levels_);
+  append_vector(def_levels_, rhs.def_levels_);
+  return (*this);
+}
 
 SchemaHelper::SchemaHelper(const string& file_path) {
   parquet::FileMetaData metadata;
@@ -821,8 +905,11 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records) {
   vector<int> offsets;
   ColumnReader& reader = *readers_[fid];
   do {
-    values += reader.GetRecordValueBatch(values_[fid], offsets, records_remains);
-    if (offsets.size() == num_records) break;
+    ValueBatch tmp;
+    tmp.BindDescriptor(desc);
+    values += reader.GetRecordValueBatch(tmp, records_remains);
+    values_[fid].append(tmp);
+    if (tmp.recordOffsets().size() == num_records) break;
     if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
     records_remains = num_records - offsets.size();
   } while (records_remains > 0);
@@ -854,20 +941,30 @@ int ParquetFileReader::LoadColumnData(int fid, int num_records,
   offsets.reserve(num_records);
   ColumnReader& reader = *readers_[fid];
   int idx = 0;
+  ValueBatch& dest = values_[fid];
   do {
+    ValueBatch tmp;
+    tmp.BindDescriptor(desc);
     int idx2 = idx;
     while (bitmask[idx2] && idx2 < bitmask.size() && idx2 < num_records) ++idx2;
     records_remains -= (idx2 - idx);
-    if (idx < idx2) reader.skipRecords(idx2 - idx);
+    if (idx < idx2) {
+      reader.skipRecords(idx2 - idx);
+      dest.appendNilRecords(idx2 - idx);
+    }
     idx = idx2;
     while (!bitmask[idx2] && idx2 < bitmask.size() && idx2 < num_records) ++idx2;
-    int offsize = offsets.size();
-    values += reader.GetRecordValueBatch(values_[fid], offsets, idx2 - idx);
-    idx += (offsets.size() - offsize);
+    values += reader.GetRecordValueBatch(tmp, idx2 - idx);
+    if (tmp.recordOffsets().size() == 0) break;
+
+    records_remains -= tmp.recordOffsets().size();
+    int delta = idx2 - idx - tmp.recordOffsets().size();
+    idx += tmp.recordOffsets().size();
+    dest.append(tmp);
     if (idx == bitmask.size()) break;
-    if (offsets.size() == num_records) break;
-    if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
-    records_remains -= (offsets.size() - offsize);
+    if (delta > 0 || tmp.recordOffsets().size() == 0) {
+      if (!chunk_generators_[fid]->NextReader(readers_[fid])) break;
+    }
   } while (records_remains > 0);
   rep_levels_[fid] = &(values_[fid].RepetitionLevels()[0]);
   return values;
