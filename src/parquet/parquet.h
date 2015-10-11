@@ -238,13 +238,7 @@ class ValueBatch {
     uint8_t* base = (uint8_t*)&values_[0];
     return base + offset * value_byte_size_; }
 
-  void reset(int size_hint) {
-    record_offsets_.clear(); record_offsets_.reserve(size_hint); 
-    def_levels_.clear(); def_levels_.reserve(size_hint);
-    rep_levels_.clear(); rep_levels_.reserve(size_hint);
-    values_.clear(); values_.reserve(size_hint);
-    buffer_.clear(); buffer_.reserve(8*size_hint);
-  }
+  ValueBatch& reset(int size_hint = 128);
 
   void resize(int values) {
     def_levels_.resize(values);
