@@ -368,7 +368,6 @@ int ColumnReader::skipRecords(int num_records) {
         values --;
       }
     } while (num_records >= 0 && values > 0);
-    num_buffered_values_ -= num_values;
   }
 
   if (max_definition_level_ > 0) {
@@ -378,11 +377,13 @@ int ColumnReader::skipRecords(int num_records) {
     for (int i=0; i<num_values; ++i) {
       if (!definition_level_decoder_->Get(&def_level))
         break;
+      num_buffered_values_ -= num_values;
       bool is_null = def_level < max_definition_level_;
       if (!is_null) values++;
     }
     skipValue(values);
   } else {
+    num_buffered_values_ -= num_values;
     skipValue(num_values);
   }
   return num_values;
@@ -509,6 +510,7 @@ int ColumnReader::GetRecordValueBatch(ValueBatch& batch,
   } else {
     num_values = DecodeValues(batch.valueAddress(0), batch.buffer_, num_values);
     batch.def_levels_.resize(num_values);
+    num_buffered_values_ -= num_values;
     memset(&batch.def_levels_[0], 0, sizeof(int32_t) * num_values);
   }
   if (max_repetition_level_ == 0) {
@@ -550,7 +552,7 @@ ValueBatch& ValueBatch::appendNilRecords(int cnt) {
   return *this;
 }
 
-template<typename T> T& append_vector(T& t1, T&t2) {
+template<typename T> T& append_vector(T& t1, T& t2) {
   t1.reserve(t1.size() + t2.size());
   t1.insert(t1.end(), t2.begin(), t2.end());
   return t1;

@@ -279,7 +279,7 @@ class ValueBatch {
 
   ValueBatch& appendNilRecords(int cnt);
   ValueBatch& append(ValueBatch&);
- 
+
  private:
   friend class ColumnReader;
   int max_def_level_;
