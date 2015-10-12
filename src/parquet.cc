@@ -377,7 +377,7 @@ int ColumnReader::skipRecords(int num_records) {
     for (int i=0; i<num_values; ++i) {
       if (!definition_level_decoder_->Get(&def_level))
         break;
-      num_buffered_values_ -= num_values;
+      num_buffered_values_ --;
       bool is_null = def_level < max_definition_level_;
       if (!is_null) values++;
     }
